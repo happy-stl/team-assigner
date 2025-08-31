@@ -1,0 +1,16 @@
+# Configuration for team assignment
+teams:
+  size:
+    min: 2
+
+  # Names of the teams
+  names:
+    - Team One
+    - Team Two
+    - Team Three
+    - Team Four
+
+  # Exclusions between teams
+  person_match_exclusions:
+    - a,b
+    - b,c
