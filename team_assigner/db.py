@@ -145,7 +145,7 @@ def create_temp_rankings(conn: sql.Connection) -> None:
 
 def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """Select the top rank for each name."""
-  sql = """
+  query = """
   SELECT name, section, team FROM (
     SELECT
       name, section, team,
@@ -154,7 +154,7 @@ def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   )
   WHERE rn=1;
   """
-  return conn.execute(sql).fetchall()
+  return conn.execute(query).fetchall()
 
 def delete_temp_top_rank(conn: sql.Connection, name: str, section: int, team: int) -> None:
   conn.execute("DELETE FROM temp_rankings WHERE name = ? AND section = ? AND team = ?", (name, section, team))
