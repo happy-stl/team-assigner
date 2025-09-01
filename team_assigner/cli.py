@@ -86,10 +86,12 @@ def init(db_file: Path, config_file: Path):
       conn.execute("INSERT INTO teams (name) VALUES (?)", (line,))
 
     db.insert_config(conn, "teams.min.size", config["teams"]["size"]["min"])
-    for section, size in config["people"]["sections"].items():
-      db.insert_config(conn, f"people.sections.{section}", size)
+    for section, names in config["people"]["sections"].items():
+      db.insert_people_sections(conn, names, int(section))
+    for section, size in config["teams"]["sections"].items():
+      db.insert_config(conn, f"teams.sections.{int(section)}", size)
     exclusion_pairs = []
-    for person, exclusions in config["teams"].get("person_match_exclusions", {}).items():
+    for person, exclusions in config["teams"].get("match_exclusions", {}).items():
       for exclusion in exclusions:
         exclusion_pairs.append((person, exclusion))
     db.insert_exclusions(conn, exclusion_pairs)
@@ -141,8 +143,7 @@ def store(db_file: Path, input_files: list[Path]):
           click.echo(f"Skipping {path.stem}")
           continue
 
-      name, section = path.stem.split("-")
-      db.insert_rankings(conn, name, int(section), rankings)
+      db.insert_rankings(conn, path.stem, rankings)
       click.echo(f"Inserted rankings from {path} into {db_file}")
     click.echo(f"Processed {len(input_files)} input files into {db_file}")
 
@@ -151,7 +152,7 @@ def store(db_file: Path, input_files: list[Path]):
 def assign(db_file: Path):
   """Assign teams based on rankings."""
   def num_teams(conn: sql.Connection) -> dict[int, float]:
-    sections = db.fetch_config_like(conn, "people.sections.%")
+    sections = db.fetch_config_like(conn, "teams.sections.%")
     min_team_size = int(db.fetch_config(conn, "teams.min.size"))
     return {
       int(section.split(".")[-1]): int(num_people) / min_team_size for section, num_people in sections.items()
@@ -179,6 +180,10 @@ def assign(db_file: Path):
     team_sizes_expanded(conn)
     db.create_temp_rankings(conn)
     rankings = db.select_temp_top_rank(conn)
+    choice = random.choice(rankings)
+    click.echo(f"Chosen ranking: {choice}")
+    # TODO delete all rankings for this name and section
+    db.delete_temp_top_rank(conn, choice[0], choice[1], choice[2])
     click.echo(f"Top rankings: {rankings}")
 
 @cli.command()

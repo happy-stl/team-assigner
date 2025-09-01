@@ -11,23 +11,29 @@ def truncate_rankings(conn: sql.Connection) -> None:
   conn.execute("DROP TABLE IF EXISTS temp_rankings")
   conn.execute("DROP VIEW IF EXISTS rankings_view")
   conn.execute("DROP TABLE IF EXISTS rankings")
+  conn.execute("DROP TABLE IF EXISTS people_sections")
+  conn.execute("""CREATE TABLE people_sections (
+    name TEXT PRIMARY KEY,
+    section INTEGER
+  )""")
   conn.execute("""CREATE TABLE rankings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
     name TEXT, 
-    section INTEGER,
     team INTEGER, 
     rank INTEGER,
     FOREIGN KEY (team) REFERENCES teams(id)
+    FOREIGN KEY (name) REFERENCES people_sections(name)
   )""")
   conn.execute("""CREATE VIEW rankings_view AS
     SELECT 
       r.name AS name,
-      r.section AS section,
+      ps.section AS section,
       t.name AS team,
       r.rank AS rank
     FROM rankings r
     JOIN teams t ON r.team = t.id
-    ORDER BY r.name, r.section, r.rank
+    JOIN people_sections ps ON r.name = ps.name
+    ORDER BY r.name, ps.section, r.rank
   """)
   conn.commit()
 
@@ -47,11 +53,11 @@ def num_teams(conn: sql.Connection) -> int:
   """Get the number of teams in the database."""
   return conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
 
-def insert_rankings(conn: sql.Connection, name: str, section: int, rankings: list[int]) -> None:
+def insert_rankings(conn: sql.Connection, name: str, rankings: list[int]) -> None:
   for team_index, rank in enumerate(rankings):
     conn.execute(
-      "INSERT INTO rankings (name, section, team, rank) VALUES (?, ?, ?, ?)",
-      (name, section, team_index + 1, rank),
+      "INSERT INTO rankings (name, team, rank) VALUES (?, ?, ?)",
+      (name, team_index + 1, rank),
     )
   conn.commit()
 
@@ -165,6 +171,10 @@ def is_excluded(conn: sql.Connection, name1: str, name2: str) -> bool:
     "SELECT COUNT(*) FROM exclusions WHERE (name1 = :name1 AND name2 = :name2) OR (name1 = :name2 AND name2 = :name1)",
     {"name1": name1, "name2": name2},
   ).fetchone()[0] > 0
+
+def insert_people_sections(conn: sql.Connection, names: list[str], section: int) -> None:
+  conn.executemany("INSERT INTO people_sections (name, section) VALUES (?, ?)", [(name, section) for name in names])
+  conn.commit()
 
 def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]) -> None:
   conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)

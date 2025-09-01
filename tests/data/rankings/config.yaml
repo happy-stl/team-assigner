@@ -2,8 +2,16 @@
 
 people:
   sections:
-    001: 5
-    002: 3
+    001:
+      - a
+      - b
+      - c
+      - d
+      - e
+    002:
+      - duplicates
+      - missing
+      - oob
 
 # Team configuration
 teams:
@@ -17,8 +25,14 @@ teams:
     - Team Three
     - Team Four
 
-  # Exclusions between teams
-  person_match_exclusions:
+  # Number of people in each section
+  sections:
+    001: 5
+    002: 3
+
+  # People that must not be matched together
+  # Note: This is implicitly bidirectional
+  match_exclusions:
     a:
       - b
     b:
