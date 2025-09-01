@@ -1,53 +1,61 @@
 import sqlite3 as sql
 
-def truncate_teams(conn: sql.Connection):
+def truncate_teams(conn: sql.Connection) -> None:
+  """Truncate the teams table."""
   conn.execute("DROP TABLE IF EXISTS teams")
   conn.execute("CREATE TABLE teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
   conn.commit()
 
-def truncate_rankings(conn: sql.Connection):
+def truncate_rankings(conn: sql.Connection) -> None:
+  """Truncate the rankings table."""
+  conn.execute("DROP TABLE IF EXISTS temp_rankings")
   conn.execute("DROP VIEW IF EXISTS rankings_view")
   conn.execute("DROP TABLE IF EXISTS rankings")
   conn.execute("""CREATE TABLE rankings (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
     name TEXT, 
+    section INTEGER,
     team INTEGER, 
     rank INTEGER,
     FOREIGN KEY (team) REFERENCES teams(id)
   )""")
   conn.execute("""CREATE VIEW rankings_view AS
     SELECT 
-      t.name AS team,
       r.name AS name,
+      r.section AS section,
+      t.name AS team,
       r.rank AS rank
     FROM rankings r
     JOIN teams t ON r.team = t.id
-    ORDER BY r.name, r.rank
+    ORDER BY r.name, r.section, r.rank
   """)
   conn.commit()
 
-def truncate_exclusions(conn: sql.Connection):
+def truncate_exclusions(conn: sql.Connection) -> None:
+  conn.execute("DROP VIEW IF EXISTS exclusion_pairs")
   conn.execute("DROP TABLE IF EXISTS exclusions")
   conn.execute("CREATE TABLE exclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, name1 TEXT, name2 TEXT)")
+  conn.execute("CREATE VIEW exclusion_pairs AS SELECT name1, name2 FROM exclusions UNION ALL SELECT name2, name1 FROM exclusions")
   conn.commit()
 
-def truncate_config(conn: sql.Connection):
+def truncate_config(conn: sql.Connection) -> None:
   conn.execute("DROP TABLE IF EXISTS config")
   conn.execute("CREATE TABLE config (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, value TEXT)")
   conn.commit()
 
 def num_teams(conn: sql.Connection) -> int:
+  """Get the number of teams in the database."""
   return conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
 
-def insert_rankings(conn: sql.Connection, name: str, rankings: list[int]):
+def insert_rankings(conn: sql.Connection, name: str, section: int, rankings: list[int]) -> None:
   for team_index, rank in enumerate(rankings):
     conn.execute(
-      "INSERT INTO rankings (name, team, rank) VALUES (?, ?, ?)",
-      (name, team_index + 1, rank),
+      "INSERT INTO rankings (name, section, team, rank) VALUES (?, ?, ?, ?)",
+      (name, section, team_index + 1, rank),
     )
   conn.commit()
 
-def delete_rankings(conn: sql.Connection, name: str):
+def delete_rankings(conn: sql.Connection, name: str) -> None:
   conn.execute("DELETE FROM rankings WHERE name = ?", (name,))
   conn.commit()
 
@@ -123,40 +131,54 @@ def validate_rankings(conn: sql.Connection) -> dict[str, list[str]]:
   
   return errors
 
-def is_rankings_valid(conn: sql.Connection) -> bool:
-  """Check if all rankings are valid (no validation errors)."""
-  errors = validate_rankings(conn)
-  return all(len(error_list) == 0 for error_list in errors.values())
-
 def is_already_ranked(conn: sql.Connection, name: str) -> bool:
   return conn.execute(
     "SELECT COUNT(*) FROM rankings WHERE name = ?",
     (name,),
   ).fetchone()[0] > 0
 
-def select_top_rank(conn: sql.Connection) -> list[tuple[str, int]]:
+def create_temp_rankings(conn: sql.Connection) -> None:
+  conn.execute(
+    "CREATE TEMPORARY TABLE IF NOT EXISTS temp_rankings AS SELECT name, section, team, rank FROM rankings"
+  )
+  conn.commit()
+
+def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """Select the top rank for each name."""
   sql = """
-  select name, team from (
-    select
-      name, team,
-      row_number() over (partition by name order by rank asc) as rn
-    from rankings
+  SELECT name, section, team FROM (
+    SELECT
+      name, section, team,
+      row_number() OVER (PARTITION BY name, section ORDER BY rank ASC) AS rn
+    FROM temp_rankings
   )
-  where rn=1;
+  WHERE rn=1;
   """
   return conn.execute(sql).fetchall()
 
-def load_exclusions(conn: sql.Connection) -> list[tuple[str, str]]:
-  return conn.execute("SELECT name1, name2 FROM exclusions").fetchall()
+def delete_temp_top_rank(conn: sql.Connection, name: str, section: int, team: int) -> None:
+  conn.execute("DELETE FROM temp_rankings WHERE name = ? AND section = ? AND team = ?", (name, section, team))
+  conn.commit()
 
-def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]):
+def is_excluded(conn: sql.Connection, name1: str, name2: str) -> bool:
+  return conn.execute(
+    "SELECT COUNT(*) FROM exclusions WHERE (name1 = :name1 AND name2 = :name2) OR (name1 = :name2 AND name2 = :name1)",
+    {"name1": name1, "name2": name2},
+  ).fetchone()[0] > 0
+
+def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]) -> None:
   conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)
   conn.commit()
 
-def load_config(conn: sql.Connection) -> dict:
+def load_config(conn: sql.Connection) -> dict[str, str]:
   return {row[0]: row[1] for row in conn.execute("SELECT key, value FROM config").fetchall()}
 
-def insert_config(conn: sql.Connection, key: str, value: str):
+def fetch_config(conn: sql.Connection, key: str) -> str:
+  return conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()[0]
+
+def fetch_config_like(conn: sql.Connection, key: str) -> dict[str, str]:
+  return dict(conn.execute("SELECT key, value FROM config WHERE key LIKE ?", (key,)).fetchall())
+
+def insert_config(conn: sql.Connection, key: str, value: str) -> None:
   conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, value))
   conn.commit()

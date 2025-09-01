@@ -1,6 +1,5 @@
 """Joiner module for Team Assigner."""
 
-from collections import defaultdict
 import click
 import sqlite3 as sql
 import re
@@ -86,11 +85,14 @@ def init(db_file: Path, config_file: Path):
         continue
       conn.execute("INSERT INTO teams (name) VALUES (?)", (line,))
 
-    db.insert_config(conn, "teams_min_size", config["teams"]["size"]["min"])
-    exclusions = []
-    for exclusion in config["teams"]["exclusions"]:
-      exclusions.append((exclusion[0], exclusion[1]))
-    db.insert_exclusions(conn, exclusions)
+    db.insert_config(conn, "teams.min.size", config["teams"]["size"]["min"])
+    for section, size in config["people"]["sections"].items():
+      db.insert_config(conn, f"people.sections.{section}", size)
+    exclusion_pairs = []
+    for person, exclusions in config["teams"].get("person_match_exclusions", {}).items():
+      for exclusion in exclusions:
+        exclusion_pairs.append((person, exclusion))
+    db.insert_exclusions(conn, exclusion_pairs)
 
     conn.commit()
 
@@ -139,7 +141,8 @@ def store(db_file: Path, input_files: list[Path]):
           click.echo(f"Skipping {path.stem}")
           continue
 
-      db.insert_rankings(conn, path.stem, rankings)
+      name, section = path.stem.split("-")
+      db.insert_rankings(conn, name, int(section), rankings)
       click.echo(f"Inserted rankings from {path} into {db_file}")
     click.echo(f"Processed {len(input_files)} input files into {db_file}")
 
@@ -147,18 +150,35 @@ def store(db_file: Path, input_files: list[Path]):
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
 def assign(db_file: Path):
   """Assign teams based on rankings."""
-  exclusion_list = db.load_exclusions(db_file)
-  click.echo(f"Exclusions: {exclusion_list}")
+  def num_teams(conn: sql.Connection) -> dict[int, float]:
+    sections = db.fetch_config_like(conn, "people.sections.%")
+    min_team_size = int(db.fetch_config(conn, "teams.min.size"))
+    return {
+      int(section.split(".")[-1]): int(num_people) / min_team_size for section, num_people in sections.items()
+    }
 
-  exclusions = defaultdict(set)
-  for exclusion in exclusion_list:
-    exclusions[exclusion[0]].add(exclusion[1])
-    exclusions[exclusion[1]].add(exclusion[0])
-  exclusions = dict(exclusions)
-  click.echo(f"Exclusions: {exclusions}")
+  def team_sizes_expanded(conn: sql.Connection) -> dict[int, int]:
+    sections = num_teams(conn)
+    min_team_size = int(db.fetch_config(conn, "teams.min.size"))
+    teams = {}
+    for section, size in sections.items():
+      teams[section] = [int(size)] * int(size)
+      rem = size % min_team_size
+      idx = 0
+      while rem > 0:
+        teams[section][idx] += 1
+        rem -= 1
+        idx += 1
+        idx %= len(teams[section])
+    click.echo(f"Teams: {teams}")
+    return teams
 
   with sql.connect(db_file) as conn:
-    rankings = db.select_top_rank(conn)
+    sections = num_teams(conn)
+    click.echo(f"People sections: {sections}")
+    team_sizes_expanded(conn)
+    db.create_temp_rankings(conn)
+    rankings = db.select_temp_top_rank(conn)
     click.echo(f"Top rankings: {rankings}")
 
 @cli.command()
@@ -168,15 +188,13 @@ def validate(db_file: Path):
   with sql.connect(db_file) as conn:
     errors = db.validate_rankings(conn)
     
-    has_errors = False
     for error_type, error_list in errors.items():
       if error_list:
-        has_errors = True
         click.echo(f"\n{error_type.replace('_', ' ').title()}:")
         for error in error_list:
           click.echo(f"  • {error}")
     
-    if not has_errors:
+    if not errors:
       click.echo("✅ All rankings are valid!")
     else:
       click.echo(f"\n❌ Found validation errors in {db_file}")

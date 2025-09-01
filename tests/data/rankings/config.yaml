@@ -1,4 +1,11 @@
 # Configuration for team assignment
+
+people:
+  sections:
+    001: 5
+    002: 3
+
+# Team configuration
 teams:
   size:
     min: 2
@@ -12,5 +19,7 @@ teams:
 
   # Exclusions between teams
   person_match_exclusions:
-    - a,b
-    - b,c
+    a:
+      - b
+    b:
+      - c

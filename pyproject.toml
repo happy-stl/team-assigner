@@ -44,7 +44,7 @@ dev = [
 test = ["pytest>=7.0.0", "pytest-cov>=4.0.0"]
 
 [project.scripts]
-team-assigner = "team_assigner.cli:main"
+team-assigner = "team_assigner.cli:cli"
 
 [project.urls]
 Homepage = "https://github.com/grimwm/team-assigner"
