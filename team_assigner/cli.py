@@ -1,125 +1,185 @@
-"""Command-line interface for Team Assigner."""
+"""Joiner module for Team Assigner."""
 
-import sys
-from pathlib import Path
-from typing import Optional
-
+from collections import defaultdict
 import click
+import sqlite3 as sql
+import re
+import random
+from pathlib import Path
+import yaml
 
-from .assigner import TeamAssigner
-from .config import Config
-from .validators import validate_rankings_csv
+import team_assigner.db as db
 
 
-@click.command()
-@click.argument("rankings_file", type=click.Path(exists=True, path_type=Path))
-@click.option(
-    "-c",
-    "--config",
-    type=click.Path(exists=True, path_type=Path),
-    help="YAML configuration file path",
-)
-@click.option(
-    "-m",
-    "--min-team-size",
-    type=int,
-    default=2,
-    help="Minimum team size (default: 2)",
-)
-@click.option(
-    "-o",
-    "--output-dir",
-    type=click.Path(path_type=Path),
-    default=Path("."),
-    help="Output directory for assignment files (default: current directory)",
-)
-@click.option(
-    "--output-prefix",
-    type=str,
-    default="team_assignments",
-    help="Prefix for output files (default: team_assignments)",
-)
-@click.option(
-    "-v",
-    "--verbose",
-    is_flag=True,
-    help="Enable verbose output",
-)
-def main(
-    rankings_file: Path,
-    config: Optional[Path],
-    min_team_size: int,
-    output_dir: Path,
-    output_prefix: str,
-    verbose: bool,
-) -> None:
-    """Assign people to teams based on their preferences from RANKINGS_FILE.
+SEPARATOR_RE = re.compile(r"[, ]+")
+
+def normalize_rankings(rankings_file: Path) -> list[int]:
+  """Normalize the rankings for a given file.
+
+  The file may be a comma-separated, newline-separated, space-separated, or mixed list of rankings.
+  It will be returned as a list of integers.
+  """
+  with open(rankings_file, "r") as f:
+    rankings = []
+    for line in f.readlines():
+      line = line.strip()
+      if not line:
+        continue
+      text = SEPARATOR_RE.sub(",", line)
+      rankings.extend([int(x) for x in text.split(",")])
+    return rankings
+
+def update_invalid_rankings(rankings: list[int], max_team_id: int) -> list[int]:
+  """Update invalid rankings to the next valid ranking."""
+  if len(rankings) > max_team_id:
+    click.echo(f"Rankings contain more than {max_team_id} rankings; pruning...")
+    rankings = rankings[:max_team_id]
+
+  if len(rankings) < max_team_id:
+    click.echo(f"Rankings contain less than {max_team_id} rankings; padding...")
+    rankings.extend([rankings[0]] * (max_team_id - len(rankings)))
+
+  rankings = rankings.copy()
+  current = set(rankings)
+  missing = set(range(1, max_team_id + 1)) - current
+  seen = set()
+  if missing:  # either duplicates or missing ranks
+    for idx, rank in enumerate(rankings):
+      if rank < 1 or rank > max_team_id or rank in seen:
+        choices = list(missing)
+        rankings[idx] = random.choice(choices)
+        missing.remove(rankings[idx])
+      else:
+        seen.add(rank)
+
+  return rankings
+  
+@click.group()
+def cli():
+  """Team Assigner CLI for managing rankings database."""
+  pass
+
+@cli.command()
+@click.argument("db_file", type=click.Path(path_type=Path))
+@click.argument("config_file", type=click.Path(path_type=Path))
+def init(db_file: Path, config_file: Path):
+  """Initialize the database."""
+  if not config_file.exists():
+    click.echo(f"Error: Teams file {config_file} does not exist")
+    return
+
+  if db_file.exists():
+    db_file.unlink()
+
+  with open(config_file, "r") as f:
+    config = yaml.safe_load(f)
+
+  with sql.connect(db_file) as conn:
+    db.truncate_teams(conn)
+    db.truncate_rankings(conn)
+    db.truncate_config(conn)
+    db.truncate_exclusions(conn)
+
+    for line in config["teams"]["names"]:
+      line = line.strip()
+      if not line:
+        continue
+      conn.execute("INSERT INTO teams (name) VALUES (?)", (line,))
+
+    db.insert_config(conn, "teams_min_size", config["teams"]["size"]["min"])
+    exclusions = []
+    for exclusion in config["teams"]["exclusions"]:
+      exclusions.append((exclusion[0], exclusion[1]))
+    db.insert_exclusions(conn, exclusions)
+
+    conn.commit()
+
+    click.echo(f"Initialized database {db_file}")
+
+@cli.command()
+@click.argument("db_file", type=click.Path(path_type=Path))
+def truncate(db_file: Path):
+  """Truncate the rankings database."""
+  with sql.connect(db_file) as conn:
+    db.truncate_rankings(conn)
+    conn.commit()
+    click.echo(f"Truncated database {db_file} successfully.")
+
+@cli.command()
+@click.argument("db_file", type=click.Path(path_type=Path))
+@click.option("--input", "input_files", type=click.Path(exists=True, path_type=Path), 
+              multiple=True, help="Input rankings files")
+def store(db_file: Path, input_files: list[Path]):
+  """Process rankings files and store in database."""
+  if not input_files:
+    click.echo("Error: At least one input file must be specified with --input")
+    return
+  
+  db_file_exists = db_file.exists()
+  with sql.connect(db_file) as conn:
+    if not db_file_exists:
+      db.truncate_rankings(conn)
+      click.echo(f"Initialized database {db_file}")
+
+    max_team_id = db.num_teams(conn)
+    click.echo(f"Max team ID: {max_team_id}")
+    for path in input_files:
+      rankings = normalize_rankings(path)
+      click.echo(f"{path.stem} rankings: {rankings}")
+      updated = update_invalid_rankings(rankings, max_team_id)
+      if rankings != updated:
+        click.echo(f"Updated rankings for {path.stem}: {rankings} -> {updated}")
+      rankings = updated
+
+      if db.is_already_ranked(conn, path.stem):
+        if click.confirm(f"{path.stem} already ranked; overwrite?"):
+          db.delete_rankings(conn, path.stem)
+          click.echo(f"Deleted rankings for {path.stem}")
+        else:
+          click.echo(f"Skipping {path.stem}")
+          continue
+
+      db.insert_rankings(conn, path.stem, rankings)
+      click.echo(f"Inserted rankings from {path} into {db_file}")
+    click.echo(f"Processed {len(input_files)} input files into {db_file}")
+
+@cli.command()
+@click.argument("db_file", type=click.Path(exists=True, path_type=Path))
+def assign(db_file: Path):
+  """Assign teams based on rankings."""
+  exclusion_list = db.load_exclusions(db_file)
+  click.echo(f"Exclusions: {exclusion_list}")
+
+  exclusions = defaultdict(set)
+  for exclusion in exclusion_list:
+    exclusions[exclusion[0]].add(exclusion[1])
+    exclusions[exclusion[1]].add(exclusion[0])
+  exclusions = dict(exclusions)
+  click.echo(f"Exclusions: {exclusions}")
+
+  with sql.connect(db_file) as conn:
+    rankings = db.select_top_rank(conn)
+    click.echo(f"Top rankings: {rankings}")
+
+@cli.command()
+@click.argument("db_file", type=click.Path(exists=True, path_type=Path))
+def validate(db_file: Path):
+  """Validate rankings data for completeness and correctness."""
+  with sql.connect(db_file) as conn:
+    errors = db.validate_rankings(conn)
     
-    RANKINGS_FILE should be a CSV file where:
-    - Each column represents a person
-    - Each row represents a preference option
-    - Each cell contains the person's ranking for that preference (1=most preferred)
+    has_errors = False
+    for error_type, error_list in errors.items():
+      if error_list:
+        has_errors = True
+        click.echo(f"\n{error_type.replace('_', ' ').title()}:")
+        for error in error_list:
+          click.echo(f"  • {error}")
     
-    Example:
-        team-assigner rankings.csv -c config.yaml -m 3 -o output/
-    """
-    try:
-        # Validate the rankings CSV file
-        if verbose:
-            click.echo(f"Validating rankings file: {rankings_file}")
-        
-        validate_rankings_csv(rankings_file)
-        
-        # Load configuration
-        if verbose:
-            click.echo(f"Loading configuration...")
-        
-        team_config = Config()
-        if config:
-            team_config.load_from_file(config)
-        
-        # Override min team size if provided via CLI
-        team_config.min_team_size = min_team_size
-        
-        if verbose:
-            click.echo(f"Minimum team size: {team_config.min_team_size}")
-            if team_config.exclusions:
-                click.echo(f"Found {len(team_config.exclusions)} exclusion groups")
-        
-        # Initialize team assigner
-        assigner = TeamAssigner(team_config)
-        
-        # Load rankings and perform assignment
-        if verbose:
-            click.echo("Loading rankings and performing team assignment...")
-        
-        assignments = assigner.assign_teams_from_csv(rankings_file)
-        
-        # Create output directory if it doesn't exist
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate output files
-        csv_output = output_dir / f"{output_prefix}.csv"
-        yaml_output = output_dir / f"{output_prefix}.yaml"
-        
-        if verbose:
-            click.echo(f"Writing assignments to: {csv_output}")
-            click.echo(f"Writing team summary to: {yaml_output}")
-        
-        assigner.save_assignments_csv(assignments, rankings_file, csv_output)
-        assigner.save_assignments_yaml(assignments, yaml_output)
-        
-        click.echo("✅ Team assignment completed successfully!")
-        click.echo(f"📊 Assignments saved to: {csv_output}")
-        click.echo(f"📋 Team summary saved to: {yaml_output}")
-        
-    except Exception as e:
-        click.echo(f"❌ Error: {e}", err=True)
-        if verbose:
-            import traceback
-            click.echo(traceback.format_exc(), err=True)
-        sys.exit(1)
-
+    if not has_errors:
+      click.echo("✅ All rankings are valid!")
+    else:
+      click.echo(f"\n❌ Found validation errors in {db_file}")
 
 if __name__ == "__main__":
-    main()
+  cli()

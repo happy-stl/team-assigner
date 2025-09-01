@@ -26,6 +26,16 @@ def truncate_rankings(conn: sql.Connection):
   """)
   conn.commit()
 
+def truncate_exclusions(conn: sql.Connection):
+  conn.execute("DROP TABLE IF EXISTS exclusions")
+  conn.execute("CREATE TABLE exclusions (id INTEGER PRIMARY KEY AUTOINCREMENT, name1 TEXT, name2 TEXT)")
+  conn.commit()
+
+def truncate_config(conn: sql.Connection):
+  conn.execute("DROP TABLE IF EXISTS config")
+  conn.execute("CREATE TABLE config (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, value TEXT)")
+  conn.commit()
+
 def num_teams(conn: sql.Connection) -> int:
   return conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
 
@@ -136,3 +146,17 @@ def select_top_rank(conn: sql.Connection) -> list[tuple[str, int]]:
   where rn=1;
   """
   return conn.execute(sql).fetchall()
+
+def load_exclusions(conn: sql.Connection) -> list[tuple[str, str]]:
+  return conn.execute("SELECT name1, name2 FROM exclusions").fetchall()
+
+def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]):
+  conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)
+  conn.commit()
+
+def load_config(conn: sql.Connection) -> dict:
+  return {row[0]: row[1] for row in conn.execute("SELECT key, value FROM config").fetchall()}
+
+def insert_config(conn: sql.Connection, key: str, value: str):
+  conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, value))
+  conn.commit()
