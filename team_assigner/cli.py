@@ -30,14 +30,14 @@ def normalize_rankings(rankings_file: Path) -> list[int]:
       rankings.extend([int(x) for x in text.split(",")])
     return rankings
 
-def update_invalid_rankings(rankings: list[int], max_team_id: int) -> list[int]:
+def rerank_invalid_rankings(rankings: list[int], max_team_id: int) -> list[int]:
   """Update invalid rankings to the next valid ranking."""
   if len(rankings) > max_team_id:
-    click.echo(f"Rankings contain more than {max_team_id} rankings; pruning...")
+    click.secho(f"Rankings contain more than {max_team_id} rankings; pruning...", fg="yellow")
     rankings = rankings[:max_team_id]
 
   if len(rankings) < max_team_id:
-    click.echo(f"Rankings contain less than {max_team_id} rankings; padding...")
+    click.secho(f"Rankings contain less than {max_team_id} rankings; padding...", fg="yellow")
     rankings.extend([rankings[0]] * (max_team_id - len(rankings)))
 
   rankings = rankings.copy()
@@ -75,7 +75,7 @@ def init(db_file: Path):
 
     conn.commit()
 
-    click.echo(f"Initialized database {db_file}")
+    click.secho(f"Initialized database {db_file}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(path_type=Path))
@@ -83,7 +83,7 @@ def init(db_file: Path):
 def config(db_file: Path, config_file: Path):
   """Initialize the database with the given config file."""
   if not config_file.exists():
-    click.echo(f"Error: Config file {config_file} does not exist")
+    click.secho(f"Error: Config file {config_file} does not exist", fg="red")
     sys.exit(1)
 
   with open(config_file, "r") as f:
@@ -103,7 +103,7 @@ def config(db_file: Path, config_file: Path):
 
     conn.commit()
 
-    click.echo(f"Loaded config from {config_file} into {db_file}")
+    click.secho(f"Loaded config from {config_file} into {db_file}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(path_type=Path))
@@ -112,7 +112,7 @@ def truncate(db_file: Path):
   with sql.connect(db_file) as conn:
     db.truncate_rankings(conn)
     conn.commit()
-    click.echo(f"Truncated database {db_file} successfully.")
+    click.secho(f"Truncated database {db_file} successfully.", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(path_type=Path))
@@ -121,51 +121,51 @@ def truncate(db_file: Path):
 def store(db_file: Path, input_files: list[Path]):
   """Process rankings files and store in database."""
   if not input_files:
-    click.echo("Error: At least one input file must be specified with --input")
-    return
+    click.secho("Error: At least one input file must be specified with --input", fg="red")
+    sys.exit(1)
   
   db_file_exists = db_file.exists()
   with sql.connect(db_file) as conn:
     if not db_file_exists:
       db.truncate_rankings(conn)
-      click.echo(f"Initialized database {db_file}")
+      click.secho(f"Initialized database {db_file}", fg="green")
 
     max_team_id = db.num_teams(conn)
-    click.echo(f"Max team ID: {max_team_id}")
+    click.secho(f"Max team ID: {max_team_id}", fg="blue")
     for path in input_files:
       rankings = normalize_rankings(path)
-      click.echo(f"{path.stem} rankings: {rankings}")
-      updated = update_invalid_rankings(rankings, max_team_id)
+      click.secho(f"{path.stem} rankings: {rankings}", fg="blue")
+      updated = rerank_invalid_rankings(rankings, max_team_id)
       if rankings != updated:
-        click.echo(f"Updated rankings for {path.stem}: {rankings} -> {updated}")
+        click.secho(f"Updated rankings for {path.stem}: {rankings} -> {updated}", fg="yellow")
       rankings = updated
 
       if db.is_already_ranked(conn, path.stem):
-        if click.confirm(f"{path.stem} already ranked; overwrite?"):
+        if click.confirm(f"{path.stem} already ranked; overwrite?", default=False):
           db.delete_rankings(conn, path.stem)
-          click.echo(f"Deleted rankings for {path.stem}")
+          click.secho(f"Deleted rankings for {path.stem}", fg="yellow")
         else:
-          click.echo(f"Skipping {path.stem}")
+          click.secho(f"Skipping {path.stem}", fg="green")
           continue
 
       db.insert_rankings(conn, path.stem, rankings)
-      click.echo(f"Inserted rankings from {path} into {db_file}")
-    click.echo(f"Processed {len(input_files)} input files into {db_file}")
+      click.secho(f"Inserted rankings from {path} into {db_file}", fg="blue")
+    click.secho(f"Processed {len(input_files)} input files into {db_file}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
 def assign(db_file: Path):
   """Assign teams based on rankings."""
+  min_team_size = int(db.fetch_config(conn, "teams.min.size"))
+
   def num_teams(conn: sql.Connection) -> dict[int, float]:
     sections = db.fetch_num_people_per_section(conn)
-    min_team_size = int(db.fetch_config(conn, "teams.min.size"))
     return {
       section: num_people / min_team_size for section, num_people in sections.items()
     }
 
   def team_sizes_expanded(conn: sql.Connection) -> dict[int, int]:
     sections = num_teams(conn)
-    min_team_size = int(db.fetch_config(conn, "teams.min.size"))
     teams = {}
     for section, size in sections.items():
       teams[section] = [int(size)] * int(size)
@@ -183,21 +183,21 @@ def assign(db_file: Path):
     team_sizes = team_sizes_expanded(conn)
     teams_assigned = {section: [] for section in sections}
 
-    click.echo(f"People sections: {sections}")
-    click.echo(f"Team sizes: {team_sizes}")
+    click.secho(f"People sections: {sections}", fg="blue")
+    click.secho(f"Team sizes: {team_sizes}", fg="blue")
 
     db.create_temp_rankings(conn)
 
     # {section: {team: set(person)}}
     section_teams: dict[int, dict[int, set[str]]] = {section: defaultdict(set) for section in sections}
     while rankings := db.select_temp_top_rank(conn):
-      click.echo(f"Top rankings: {rankings}")
+      click.secho(f"Top rankings: {rankings}", fg="blue")
       choice = random.choice(rankings)
-      click.echo(f"Chosen assignment: {choice}")
+      click.secho(f"Chosen assignment: {choice}", fg="blue")
       person, section, team = choice
       assigned_team = section_teams[section][team]
       if db.is_excluded(conn, person, list(assigned_team)):
-        click.echo(f"{person} excluded by rule with somebody already in {{section: {section}, team {team}}}; skipping...")
+        click.secho(f"{person} excluded by rule with somebody already in {{section: {section}, team {team}}}; skipping...", fg="yellow")
         continue
       assigned_team.add(person)
       if len(assigned_team) == team_sizes[section][0]:
@@ -206,7 +206,7 @@ def assign(db_file: Path):
         teams_assigned[section].append(assigned_team)
       db.delete_temp_rankings(conn, person)
 
-    click.echo(f"Teams assigned: {teams_assigned}")
+    click.secho(f"Teams assigned: {teams_assigned}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
@@ -217,14 +217,14 @@ def validate(db_file: Path):
     
     for error_type, error_list in errors.items():
       if error_list:
-        click.echo(f"\n{error_type.replace('_', ' ').title()}:")
+        click.secho(f"\n{error_type.replace('_', ' ').title()}:", fg="red")
         for error in error_list:
-          click.echo(f"  • {error}")
+          click.secho(f"  • {error}", fg="red")
     
     if not errors:
-      click.echo("✅ All rankings are valid!")
+      click.secho("✅ All rankings are valid!", fg="green")
     else:
-      click.echo(f"\n❌ Found validation errors in {db_file}")
+      click.secho(f"\n❌ Found validation errors in {db_file}", fg="red")
 
 if __name__ == "__main__":
   cli()
