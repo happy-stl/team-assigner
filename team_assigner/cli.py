@@ -1,6 +1,8 @@
 """Joiner module for Team Assigner."""
 
+from collections import defaultdict
 import click
+import sys
 import sqlite3 as sql
 import re
 import random
@@ -60,18 +62,10 @@ def cli():
 
 @cli.command()
 @click.argument("db_file", type=click.Path(path_type=Path))
-@click.argument("config_file", type=click.Path(path_type=Path))
-def init(db_file: Path, config_file: Path):
+def init(db_file: Path):
   """Initialize the database."""
-  if not config_file.exists():
-    click.echo(f"Error: Teams file {config_file} does not exist")
-    return
-
   if db_file.exists():
     db_file.unlink()
-
-  with open(config_file, "r") as f:
-    config = yaml.safe_load(f)
 
   with sql.connect(db_file) as conn:
     db.truncate_teams(conn)
@@ -79,17 +73,28 @@ def init(db_file: Path, config_file: Path):
     db.truncate_config(conn)
     db.truncate_exclusions(conn)
 
-    for line in config["teams"]["names"]:
-      line = line.strip()
-      if not line:
-        continue
-      conn.execute("INSERT INTO teams (name) VALUES (?)", (line,))
+    conn.commit()
+
+    click.echo(f"Initialized database {db_file}")
+
+@cli.command()
+@click.argument("db_file", type=click.Path(path_type=Path))
+@click.argument("config_file", type=click.Path(path_type=Path))
+def config(db_file: Path, config_file: Path):
+  """Initialize the database with the given config file."""
+  if not config_file.exists():
+    click.echo(f"Error: Config file {config_file} does not exist")
+    sys.exit(1)
+
+  with open(config_file, "r") as f:
+    config = yaml.safe_load(f)
+
+  with sql.connect(db_file) as conn:
+    db.insert_teams(conn, [(int(team_id), name) for team_id, name in config["teams"]["names"].items()])
 
     db.insert_config(conn, "teams.min.size", config["teams"]["size"]["min"])
     for section, names in config["people"]["sections"].items():
       db.insert_people_sections(conn, names, int(section))
-    for section, size in config["teams"]["sections"].items():
-      db.insert_config(conn, f"teams.sections.{int(section)}", size)
     exclusion_pairs = []
     for person, exclusions in config["teams"].get("match_exclusions", {}).items():
       for exclusion in exclusions:
@@ -98,7 +103,7 @@ def init(db_file: Path, config_file: Path):
 
     conn.commit()
 
-    click.echo(f"Initialized database {db_file}")
+    click.echo(f"Loaded config from {config_file} into {db_file}")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(path_type=Path))
@@ -152,10 +157,10 @@ def store(db_file: Path, input_files: list[Path]):
 def assign(db_file: Path):
   """Assign teams based on rankings."""
   def num_teams(conn: sql.Connection) -> dict[int, float]:
-    sections = db.fetch_config_like(conn, "teams.sections.%")
+    sections = db.fetch_num_people_per_section(conn)
     min_team_size = int(db.fetch_config(conn, "teams.min.size"))
     return {
-      int(section.split(".")[-1]): int(num_people) / min_team_size for section, num_people in sections.items()
+      section: num_people / min_team_size for section, num_people in sections.items()
     }
 
   def team_sizes_expanded(conn: sql.Connection) -> dict[int, int]:
@@ -171,20 +176,37 @@ def assign(db_file: Path):
         rem -= 1
         idx += 1
         idx %= len(teams[section])
-    click.echo(f"Teams: {teams}")
     return teams
 
   with sql.connect(db_file) as conn:
     sections = num_teams(conn)
+    team_sizes = team_sizes_expanded(conn)
+    teams_assigned = {section: [] for section in sections}
+
     click.echo(f"People sections: {sections}")
-    team_sizes_expanded(conn)
+    click.echo(f"Team sizes: {team_sizes}")
+
     db.create_temp_rankings(conn)
-    rankings = db.select_temp_top_rank(conn)
-    choice = random.choice(rankings)
-    click.echo(f"Chosen ranking: {choice}")
-    # TODO delete all rankings for this name and section
-    db.delete_temp_top_rank(conn, choice[0], choice[1], choice[2])
-    click.echo(f"Top rankings: {rankings}")
+
+    # {section: {team: set(person)}}
+    section_teams: dict[int, dict[int, set[str]]] = {section: defaultdict(set) for section in sections}
+    while rankings := db.select_temp_top_rank(conn):
+      click.echo(f"Top rankings: {rankings}")
+      choice = random.choice(rankings)
+      click.echo(f"Chosen assignment: {choice}")
+      person, section, team = choice
+      assigned_team = section_teams[section][team]
+      if db.is_excluded(conn, person, list(assigned_team)):
+        click.echo(f"{person} excluded by rule with somebody already in {{section: {section}, team {team}}}; skipping...")
+        continue
+      assigned_team.add(person)
+      if len(assigned_team) == team_sizes[section][0]:
+        team_sizes[section].pop(0)
+        db.delete_temp_rankings_for_team(conn, team)
+        teams_assigned[section].append(assigned_team)
+      db.delete_temp_rankings(conn, person)
+
+    click.echo(f"Teams assigned: {teams_assigned}")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))

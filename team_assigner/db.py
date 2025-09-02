@@ -1,9 +1,10 @@
 import sqlite3 as sql
+from typing import Iterable
 
 def truncate_teams(conn: sql.Connection) -> None:
   """Truncate the teams table."""
   conn.execute("DROP TABLE IF EXISTS teams")
-  conn.execute("CREATE TABLE teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT)")
+  conn.execute("CREATE TABLE teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, CONSTRAINT teams_name_unique UNIQUE (name))")
   conn.commit()
 
 def truncate_rankings(conn: sql.Connection) -> None:
@@ -46,7 +47,16 @@ def truncate_exclusions(conn: sql.Connection) -> None:
 
 def truncate_config(conn: sql.Connection) -> None:
   conn.execute("DROP TABLE IF EXISTS config")
-  conn.execute("CREATE TABLE config (id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT, value TEXT)")
+  conn.execute(
+    """
+    CREATE TABLE config (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT,
+      value TEXT,
+      CONSTRAINT config_key_unique UNIQUE (key)
+    )
+    """
+  )
   conn.commit()
 
 def num_teams(conn: sql.Connection) -> int:
@@ -145,7 +155,12 @@ def is_already_ranked(conn: sql.Connection, name: str) -> bool:
 
 def create_temp_rankings(conn: sql.Connection) -> None:
   conn.execute(
-    "CREATE TEMPORARY TABLE IF NOT EXISTS temp_rankings AS SELECT name, section, team, rank FROM rankings"
+    """
+    CREATE TEMPORARY TABLE IF NOT EXISTS temp_rankings AS
+    SELECT r.name, ps.section, r.team, r.rank
+    FROM rankings r
+    JOIN people_sections ps ON r.name = ps.name
+    """
   )
   conn.commit()
 
@@ -162,19 +177,46 @@ def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """
   return conn.execute(query).fetchall()
 
-def delete_temp_top_rank(conn: sql.Connection, name: str, section: int, team: int) -> None:
-  conn.execute("DELETE FROM temp_rankings WHERE name = ? AND section = ? AND team = ?", (name, section, team))
+def delete_temp_rankings(conn: sql.Connection, name: str) -> None:
+  conn.execute("DELETE FROM temp_rankings WHERE name = ?", (name,))
   conn.commit()
 
-def is_excluded(conn: sql.Connection, name1: str, name2: str) -> bool:
+def delete_temp_rankings_for_team(conn: sql.Connection, team: int) -> None:
+  conn.execute("DELETE FROM temp_rankings WHERE team = ?", (team,))
+  conn.commit()
+
+def is_excluded(conn: sql.Connection, root: str, targets: Iterable[str]) -> bool:
+  in_targets = ",".join(f"'{target}'" for target in targets)
   return conn.execute(
-    "SELECT COUNT(*) FROM exclusions WHERE (name1 = :name1 AND name2 = :name2) OR (name1 = :name2 AND name2 = :name1)",
-    {"name1": name1, "name2": name2},
+    """
+    SELECT COUNT(*)
+    FROM exclusions
+    WHERE (name1 = :root AND name2 IN (:targets))
+       OR (name1 IN (:targets) AND name2 = :root)
+    """,
+    {"root": root, "targets": in_targets},
   ).fetchone()[0] > 0
 
 def insert_people_sections(conn: sql.Connection, names: list[str], section: int) -> None:
-  conn.executemany("INSERT INTO people_sections (name, section) VALUES (?, ?)", [(name, section) for name in names])
+  conn.executemany(
+    """INSERT INTO people_sections (name, section) VALUES (?, ?)
+    ON CONFLICT(name) DO UPDATE
+    SET section = excluded.section""",
+    [(name, section) for name in names]
+  )
   conn.commit()
+
+def insert_teams(conn: sql.Connection, values: list[tuple[int, str]]) -> None:
+  conn.executemany(
+    """INSERT INTO teams (id, name) VALUES (?, ?)
+    ON CONFLICT(id) DO UPDATE
+    SET name = excluded.name""",
+    values
+  )
+  conn.commit()
+
+def fetch_num_people_per_section(conn: sql.Connection) -> dict[int, int]:
+  return {row[0]: row[1] for row in conn.execute("SELECT section, COUNT(*) FROM people_sections GROUP BY section").fetchall()}
 
 def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]) -> None:
   conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)
@@ -190,5 +232,10 @@ def fetch_config_like(conn: sql.Connection, key: str) -> dict[str, str]:
   return dict(conn.execute("SELECT key, value FROM config WHERE key LIKE ?", (key,)).fetchall())
 
 def insert_config(conn: sql.Connection, key: str, value: str) -> None:
-  conn.execute("INSERT INTO config (key, value) VALUES (?, ?)", (key, value))
+  conn.execute(
+    """INSERT INTO config (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE
+    SET value = excluded.value""",
+    (key, value)
+  )
   conn.commit()

@@ -20,15 +20,10 @@ teams:
 
   # Names of the teams
   names:
-    - Team One
-    - Team Two
-    - Team Three
-    - Team Four
-
-  # Number of people in each section
-  sections:
-    001: 5
-    002: 3
+    1: Team One
+    2: Team Two
+    3: Team Three
+    4: Team Four
 
   # People that must not be matched together
   # Note: This is implicitly bidirectional
