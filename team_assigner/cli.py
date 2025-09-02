@@ -8,7 +8,6 @@ import re
 import random
 from pathlib import Path
 import yaml
-import math
 
 import team_assigner.db as db
 
@@ -201,13 +200,17 @@ def assign(db_file: Path, is_debug: bool):
     return teams
 
   def print_teams_assigned(teams_assigned: dict[int, dict[int, set[str]]], fg: str) -> None:
+    team_names = db.fetch_teams(conn)
     sections = sorted(teams_assigned.keys())
     for section in sections:
       click.secho(f"  Section {section}:", fg=fg)
       teams = sorted(teams_assigned[section].keys())
       for team in teams:
+        team_name = team_names[team]
         people = teams_assigned[section][team]
-        click.secho(f"    Team {team}: {people}", fg=fg)
+        click.secho(f"    Team {team} ({team_name}):", fg=fg)
+        for person in sorted(people):
+          click.secho(f"      - {person}", fg=fg)
 
   if validate.callback(db_file):
     click.secho(f"Validation errors in {db_file}", fg="red")
