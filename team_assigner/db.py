@@ -172,7 +172,7 @@ def create_temp_rankings(conn: sql.Connection) -> None:
   )
   conn.commit()
 
-def select_temp_most_popular_team(conn: sql.Connection) -> int:
+def fetch_temp_most_popular_team(conn: sql.Connection) -> int:
   query = """
   SELECT team as count FROM (
     SELECT
@@ -186,7 +186,7 @@ def select_temp_most_popular_team(conn: sql.Connection) -> int:
   """
   return conn.execute(query).fetchone()[0]
 
-def select_temp_top_rank_for_team(conn: sql.Connection, team: int) -> list[tuple[str, int, int]]:
+def fetch_temp_top_rank_for_team(conn: sql.Connection, team: int) -> list[tuple[str, int, int]]:
   query = """
   SELECT name, section, team FROM (
     SELECT
@@ -200,7 +200,7 @@ def select_temp_top_rank_for_team(conn: sql.Connection, team: int) -> list[tuple
   """
   return conn.execute(query, (team,)).fetchall()
 
-def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
+def fetch_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """Select the top rank for each name."""
   query = """
   SELECT name, section, team FROM (
@@ -270,6 +270,9 @@ def insert_teams(conn: sql.Connection, values: Iterable[tuple[int, str]]) -> Non
 
 def fetch_num_people_per_section(conn: sql.Connection) -> dict[int, int]:
   return {row[0]: row[1] for row in conn.execute("SELECT section, COUNT(*) FROM people_sections GROUP BY section").fetchall()}
+
+def fetch_teams(conn: sql.Connection) -> dict[int, str]:
+  return {row[0]: row[1] for row in conn.execute("SELECT id, name FROM teams").fetchall()}
 
 def insert_exclusions(conn: sql.Connection, exclusions: Iterable[tuple[str, str]]) -> None:
   conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)

@@ -200,6 +200,15 @@ def assign(db_file: Path, is_debug: bool):
         idx %= len(teams[section])
     return teams
 
+  def print_teams_assigned(teams_assigned: dict[int, dict[int, set[str]]], fg: str) -> None:
+    sections = sorted(teams_assigned.keys())
+    for section in sections:
+      click.secho(f"  Section {section}:", fg=fg)
+      teams = sorted(teams_assigned[section].keys())
+      for team in teams:
+        people = teams_assigned[section][team]
+        click.secho(f"    Team {team}: {people}", fg=fg)
+
   if validate.callback(db_file):
     click.secho(f"Validation errors in {db_file}", fg="red")
     sys.exit(1)
@@ -216,14 +225,14 @@ def assign(db_file: Path, is_debug: bool):
 
     # {section: {team: set(person)}}
     section_teams: dict[int, dict[int, set[str]]] = {section: defaultdict(set) for section in sections}
-    while top_rankings := db.select_temp_top_rank(conn):
+    while top_rankings := db.fetch_temp_top_rank(conn):
       if not top_rankings:
         click.secho("No more rankings to assign; stopping...", fg="red")
         break
       is_debug and click.secho(f"Selecting target team from {top_rankings}...", fg="blue")
-      target_team = db.select_temp_most_popular_team(conn)
+      target_team = db.fetch_temp_most_popular_team(conn)
       is_debug and click.secho(f"Target team: {target_team}", fg="blue")
-      rankings = db.select_temp_top_rank_for_team(conn, target_team)
+      rankings = db.fetch_temp_top_rank_for_team(conn, target_team)
       is_debug and click.secho(f"Rankings for target team: {rankings}", fg="blue")
       if not any(team_sizes[section] for section in sections):
         click.secho("No more teams to assign; stopping...", fg="red")
@@ -239,9 +248,7 @@ def assign(db_file: Path, is_debug: bool):
             click.secho("All remaining rankings are excluded from matching; stopping...", fg="red")
             click.secho("Please check the exclusions and try again; team assignments could not be completed.", fg="red")
             click.secho("These are the teams that were assigned:", fg="red")
-            for section, teams in teams_assigned.items():
-              for team, people in teams.items():
-                click.secho(f"Team {team} in section {section}: {people}", fg="red")
+            print_teams_assigned(teams_assigned, "red")
             sys.exit(1)
           continue
         skip_count = 0
@@ -258,7 +265,8 @@ def assign(db_file: Path, is_debug: bool):
       if is_debug and not click.confirm(f"Continue assigning teams?", default=True):
         break
 
-    click.secho(f"Teams assigned: {teams_assigned}", fg="green")
+    click.secho("Teams assigned:", fg="green")
+    print_teams_assigned(teams_assigned, "green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
