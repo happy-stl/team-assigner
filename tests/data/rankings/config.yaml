@@ -27,8 +27,8 @@ teams:
 
   # People that must not be matched together
   # Note: This is implicitly bidirectional
-#  match_exclusions:
-#    a:
-#      - b
-#    b:
-#      - c
+  match_exclusions:
+    a:
+      - b
+    b:
+      - c
