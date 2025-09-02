@@ -16,7 +16,7 @@ people:
 # Team configuration
 teams:
   size:
-    min: 2
+    min: 5
 
   # Names of the teams
   names:

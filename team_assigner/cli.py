@@ -170,7 +170,8 @@ def store(db_file: Path, input_files: list[Path]):
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
-def assign(db_file: Path):
+@click.option("--debug", "is_debug", is_flag=True, help="Debug mode")
+def assign(db_file: Path, is_debug: bool):
   """Assign teams based on rankings."""
   if not db_file.exists():
     click.secho(f"Error: Database file {db_file} does not exist", fg="red")
@@ -188,21 +189,17 @@ def assign(db_file: Path):
   def team_sizes_expanded(conn: sql.Connection) -> dict[int, list[int]]:
     num_teams_per_section = num_teams_by_section(conn)
     teams = {}
+    click.secho(f"num_teams_per_section: {num_teams_per_section}", fg="yellow")
     for section, num_teams in num_teams_per_section.items():
       click.secho(f"Section {section} has {num_teams} teams", fg="yellow")
-      teams[section] = [min_team_size] * int(num_teams)
-      if section == 2:
-        click.secho(f"Section {section} has {num_teams} teams; {teams[section]}", fg="yellow")
-      rem = math.ceil(num_teams) % min_team_size
-      click.secho(f"Rem: {rem}", fg="yellow")
+      teams[section] = [min_team_size] * int(num_teams) if int(num_teams) > 0 else [0]
+      rem = int(num_teams * min_team_size) % min_team_size
       idx = 0
       while rem > 0:
         teams[section][idx] += 1
         rem -= 1
         idx += 1
         idx %= len(teams[section])
-    if section == 2:
-      click.secho(f"Section {section} has {num_teams} teams; {teams[section]}", fg="yellow")
     return teams
 
   if validate.callback(db_file):
@@ -222,11 +219,22 @@ def assign(db_file: Path):
     # {section: {team: set(person)}}
     section_teams: dict[int, dict[int, set[str]]] = {section: defaultdict(set) for section in sections}
     skip_count = 0
+    stop = False
+    last_rankings = set()
     while rankings := db.select_temp_top_rank(conn):
+      if stop:
+        break
+      if last_rankings == set(rankings):
+        for ranking in rankings:
+          person, _, team = ranking
+          db.ignore_temp_rankings_for_name_team(conn, person, team)
+        click.secho("No more rankings to assign; stopping...", fg="red")
+        break
       if not any(team_sizes[section] for section in sections):
         click.secho("No more teams to assign; stopping...", fg="red")
         break
       click.secho(f"Top rankings: {rankings}", fg="blue")
+      last_rankings = set(rankings)
       while rankings:
         choice = random.choice(rankings)
         rankings.remove(choice)
@@ -268,7 +276,9 @@ def assign(db_file: Path):
             click.secho(f"Removed {assigned_team} from all other teams; section_teams: {section_teams}", fg="blue")
             teams_assigned[section].append(list(assigned_team))
             rankings = db.select_temp_top_rank(conn)
-        if not click.confirm(f"Continue assigning teams?", default=True):
+            click.secho(f"New rankings: {rankings}", fg="blue")
+        if is_debug and not click.confirm(f"Continue assigning teams?", default=True):
+          stop = True
           break
 
     click.secho(f"Teams assigned: {teams_assigned}", fg="green")

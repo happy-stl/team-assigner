@@ -186,6 +186,10 @@ def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """
   return conn.execute(query).fetchall()
 
+def ignore_temp_rankings_for_name_team(conn: sql.Connection, name: str, team: int) -> None:
+  conn.execute("UPDATE temp_rankings SET excluded = true WHERE name = ? AND team = ?", (name, team))
+  conn.commit()
+
 def ignore_temp_rankings_for_names(conn: sql.Connection, names: Iterable[str]) -> None:
   in_names = ",".join(f"'{name}'" for name in names)
   conn.execute("UPDATE temp_rankings SET excluded = true WHERE name IN (?)", (in_names,))
