@@ -172,6 +172,34 @@ def create_temp_rankings(conn: sql.Connection) -> None:
   )
   conn.commit()
 
+def select_temp_most_popular_team(conn: sql.Connection) -> int:
+  query = """
+  SELECT team as count FROM (
+    SELECT
+      name, section, team,
+      row_number() OVER (PARTITION BY name, section ORDER BY rank ASC) AS rn
+    FROM temp_rankings
+    WHERE excluded = false
+  )
+  WHERE rn=1
+  GROUP BY team ORDER BY count(*) DESC LIMIT 1;
+  """
+  return conn.execute(query).fetchone()[0]
+
+def select_temp_top_rank_for_team(conn: sql.Connection, team: int) -> list[tuple[str, int, int]]:
+  query = """
+  SELECT name, section, team FROM (
+    SELECT
+      name, section, team,
+      row_number() OVER (PARTITION BY rank ORDER BY RANDOM()) AS rn
+    FROM temp_rankings
+    WHERE excluded = false
+      AND team = ?
+    ORDER BY rank ASC, rn ASC
+  )
+  """
+  return conn.execute(query, (team,)).fetchall()
+
 def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
   """Select the top rank for each name."""
   query = """
@@ -191,8 +219,7 @@ def ignore_temp_rankings_for_name_team(conn: sql.Connection, name: str, team: in
   conn.commit()
 
 def ignore_temp_rankings_for_names(conn: sql.Connection, names: Iterable[str]) -> None:
-  in_names = ",".join(f"'{name}'" for name in names)
-  conn.execute("UPDATE temp_rankings SET excluded = true WHERE name IN (?)", (in_names,))
+  conn.executemany("UPDATE temp_rankings SET excluded = true WHERE name = ?", [(name,) for name in names])
   conn.commit()
 
 def randomize_temp_ranking(conn: sql.Connection, name: str, team: int, num_teams: int) -> None:
