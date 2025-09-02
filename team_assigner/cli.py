@@ -189,9 +189,7 @@ def assign(db_file: Path, is_debug: bool):
   def team_sizes_expanded(conn: sql.Connection) -> dict[int, list[int]]:
     num_teams_per_section = num_teams_by_section(conn)
     teams = {}
-    click.secho(f"num_teams_per_section: {num_teams_per_section}", fg="yellow")
     for section, num_teams in num_teams_per_section.items():
-      click.secho(f"Section {section} has {num_teams} teams", fg="yellow")
       teams[section] = [min_team_size] * int(num_teams) if int(num_teams) > 0 else [0]
       rem = int(num_teams * min_team_size) % min_team_size
       idx = 0
@@ -211,8 +209,8 @@ def assign(db_file: Path, is_debug: bool):
     team_sizes = team_sizes_expanded(conn)
     teams_assigned = {section: {} for section in sections}
 
-    click.secho(f"People sections: {sections}", fg="blue")
-    click.secho(f"Team sizes: {team_sizes}", fg="blue")
+    is_debug and click.secho(f"People sections: {sections}", fg="blue")
+    click.secho(f"Team sizes: {team_sizes}", fg="green")
 
     db.create_temp_rankings(conn)
 
@@ -222,20 +220,34 @@ def assign(db_file: Path, is_debug: bool):
       if not top_rankings:
         click.secho("No more rankings to assign; stopping...", fg="red")
         break
-      click.secho(f"Selecting target team from {top_rankings}...", fg="blue")
+      is_debug and click.secho(f"Selecting target team from {top_rankings}...", fg="blue")
       target_team = db.select_temp_most_popular_team(conn)
-      click.secho(f"Target team: {target_team}", fg="blue")
+      is_debug and click.secho(f"Target team: {target_team}", fg="blue")
       rankings = db.select_temp_top_rank_for_team(conn, target_team)
-      click.secho(f"Rankings for target team: {rankings}", fg="blue")
+      is_debug and click.secho(f"Rankings for target team: {rankings}", fg="blue")
       if not any(team_sizes[section] for section in sections):
         click.secho("No more teams to assign; stopping...", fg="red")
         break
+      skip_count = 0
       while rankings:
         person, section, team = rankings.pop(0)
-        click.secho(f"Assigning {person} to team {team} in section {section}", fg="blue")
         assigned_team = section_teams[section][team]
+        if db.is_excluded(conn, person, list(assigned_team)):
+          click.secho(f"{person} is excluded from team {team} in section {section}; skipping...", fg="yellow")
+          skip_count += 1
+          if skip_count == len(rankings):
+            click.secho("All remaining rankings are excluded from matching; stopping...", fg="red")
+            click.secho("Please check the exclusions and try again; team assignments could not be completed.", fg="red")
+            click.secho("These are the teams that were assigned:", fg="red")
+            for section, teams in teams_assigned.items():
+              for team, people in teams.items():
+                click.secho(f"Team {team} in section {section}: {people}", fg="red")
+            sys.exit(1)
+          continue
+        skip_count = 0
+        is_debug and click.secho(f"Assigning {person} to team {team} in section {section}", fg="blue")
         assigned_team.add(person)
-        click.secho(f"Assigned team: {assigned_team}; len: {len(assigned_team)}; has team sizes: {bool(team_sizes[section])}", fg="blue")
+        is_debug and click.secho(f"Assigned team: {assigned_team}; len: {len(assigned_team)}; has team sizes: {bool(team_sizes[section])}", fg="blue")
         if team_sizes[section]:
           if len(assigned_team) == team_sizes[section][0]:  # first team to the finish
             team_sizes[section].pop(0)

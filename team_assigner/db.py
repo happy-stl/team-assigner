@@ -230,25 +230,25 @@ def ignore_temp_rankings_for_team(conn: sql.Connection, team: int) -> None:
   conn.execute("UPDATE temp_rankings SET excluded = true WHERE team = ?", (team,))
   conn.commit()
 
-def delete_temp_rankings(conn: sql.Connection, name: str) -> None:
-  conn.execute("DELETE FROM temp_rankings WHERE name = ?", (name,))
-  conn.commit()
-
-def delete_temp_rankings_for_team(conn: sql.Connection, team: int) -> None:
-  conn.execute("DELETE FROM temp_rankings WHERE team = ?", (team,))
-  conn.commit()
-
 def is_excluded(conn: sql.Connection, root: str, targets: Iterable[str]) -> bool:
-  in_targets = ",".join(f"'{target}'" for target in targets)
-  return conn.execute(
-    """
+  targets_list = list(targets)
+  if not targets_list:
+    return False
+  
+  placeholders = ','.join('?' * len(targets_list))
+  params = [root] + targets_list + targets_list + [root]
+  
+  result = conn.execute(
+    f"""
     SELECT COUNT(*)
     FROM exclusions
-    WHERE (name1 = :root AND name2 IN (:targets))
-       OR (name1 IN (:targets) AND name2 = :root)
+    WHERE (name1 = ? AND name2 IN ({placeholders}))
+       OR (name1 IN ({placeholders}) AND name2 = ?)
     """,
-    {"root": root, "targets": in_targets},
-  ).fetchone()[0] > 0
+    params
+  ).fetchone()
+  
+  return result[0] > 0
 
 def insert_people_sections(conn: sql.Connection, names: Iterable[str], section: int) -> None:
   conn.executemany(
