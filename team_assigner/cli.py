@@ -8,6 +8,7 @@ import re
 import random
 from pathlib import Path
 import yaml
+import math
 
 import team_assigner.db as db
 
@@ -64,8 +65,11 @@ def cli():
 @click.argument("db_file", type=click.Path(path_type=Path))
 def init(db_file: Path):
   """Initialize the database."""
-  if db_file.exists():
+  if db_file.exists() and click.confirm(f"Database file {db_file} already exists; overwrite?", default=False):
     db_file.unlink()
+  else:
+    click.secho(f"Database file {db_file} already exists; not overwriting", fg="red")
+    sys.exit(1)
 
   with sql.connect(db_file) as conn:
     db.truncate_teams(conn)
@@ -82,6 +86,10 @@ def init(db_file: Path):
 @click.argument("config_file", type=click.Path(path_type=Path))
 def config(db_file: Path, config_file: Path):
   """Initialize the database with the given config file."""
+  if not db_file.exists():
+    click.secho(f"Error: Database file {db_file} does not exist", fg="red")
+    sys.exit(1)
+
   if not config_file.exists():
     click.secho(f"Error: Config file {config_file} does not exist", fg="red")
     sys.exit(1)
@@ -109,6 +117,10 @@ def config(db_file: Path, config_file: Path):
 @click.argument("db_file", type=click.Path(path_type=Path))
 def truncate(db_file: Path):
   """Truncate the rankings database."""
+  if not db_file.exists():
+    click.secho(f"Error: Database file {db_file} does not exist", fg="red")
+    sys.exit(1)
+
   with sql.connect(db_file) as conn:
     db.truncate_rankings(conn)
     conn.commit()
@@ -120,6 +132,10 @@ def truncate(db_file: Path):
               multiple=True, help="Input rankings files")
 def store(db_file: Path, input_files: list[Path]):
   """Process rankings files and store in database."""
+  if not db_file.exists():
+    click.secho(f"Error: Database file {db_file} does not exist", fg="red")
+    sys.exit(1)
+
   if not input_files:
     click.secho("Error: At least one input file must be specified with --input", fg="red")
     sys.exit(1)
@@ -134,52 +150,67 @@ def store(db_file: Path, input_files: list[Path]):
     click.secho(f"Max team ID: {max_team_id}", fg="blue")
     for path in input_files:
       rankings = normalize_rankings(path)
-      click.secho(f"{path.stem} rankings: {rankings}", fg="blue")
+      click.secho(f"{path.stem}'s rankings: {rankings}", fg="blue")
       updated = rerank_invalid_rankings(rankings, max_team_id)
       if rankings != updated:
-        click.secho(f"Updated rankings for {path.stem}: {rankings} -> {updated}", fg="yellow")
+        click.secho(f"Updated {path.stem}'s rankings: {rankings} -> {updated}", fg="yellow")
       rankings = updated
 
       if db.is_already_ranked(conn, path.stem):
-        if click.confirm(f"{path.stem} already ranked; overwrite?", default=False):
+        if click.confirm(f"{path.stem}'s rankings already exist; overwrite?", default=False):
           db.delete_rankings(conn, path.stem)
-          click.secho(f"Deleted rankings for {path.stem}", fg="yellow")
+          click.secho(f"Deleted {path.stem}'s rankings", fg="yellow")
         else:
-          click.secho(f"Skipping {path.stem}", fg="green")
+          click.secho(f"Skipping {path.stem}'s rankings", fg="green")
           continue
 
       db.insert_rankings(conn, path.stem, rankings)
-      click.secho(f"Inserted rankings from {path} into {db_file}", fg="blue")
+      click.secho(f"Inserted {path.stem}'s rankings into {db_file}", fg="blue")
     click.secho(f"Processed {len(input_files)} input files into {db_file}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
 def assign(db_file: Path):
   """Assign teams based on rankings."""
-  min_team_size = int(db.fetch_config(conn, "teams.min.size"))
+  if not db_file.exists():
+    click.secho(f"Error: Database file {db_file} does not exist", fg="red")
+    sys.exit(1)
 
-  def num_teams(conn: sql.Connection) -> dict[int, float]:
+  with sql.connect(db_file) as conn:
+    min_team_size = int(db.fetch_config(conn, "teams.min.size"))
+
+  def num_teams_by_section(conn: sql.Connection) -> dict[int, float]:
     sections = db.fetch_num_people_per_section(conn)
     return {
       section: num_people / min_team_size for section, num_people in sections.items()
     }
 
-  def team_sizes_expanded(conn: sql.Connection) -> dict[int, int]:
-    sections = num_teams(conn)
+  def team_sizes_expanded(conn: sql.Connection) -> dict[int, list[int]]:
+    num_teams_per_section = num_teams_by_section(conn)
     teams = {}
-    for section, size in sections.items():
-      teams[section] = [int(size)] * int(size)
-      rem = size % min_team_size
+    for section, num_teams in num_teams_per_section.items():
+      click.secho(f"Section {section} has {num_teams} teams", fg="yellow")
+      teams[section] = [min_team_size] * int(num_teams)
+      if section == 2:
+        click.secho(f"Section {section} has {num_teams} teams; {teams[section]}", fg="yellow")
+      rem = math.ceil(num_teams) % min_team_size
+      click.secho(f"Rem: {rem}", fg="yellow")
       idx = 0
       while rem > 0:
         teams[section][idx] += 1
         rem -= 1
         idx += 1
         idx %= len(teams[section])
+    if section == 2:
+      click.secho(f"Section {section} has {num_teams} teams; {teams[section]}", fg="yellow")
     return teams
 
+  if validate.callback(db_file):
+    click.secho(f"Validation errors in {db_file}", fg="red")
+    sys.exit(1)
+
   with sql.connect(db_file) as conn:
-    sections = num_teams(conn)
+    sections = num_teams_by_section(conn)
     team_sizes = team_sizes_expanded(conn)
     teams_assigned = {section: [] for section in sections}
 
@@ -190,41 +221,82 @@ def assign(db_file: Path):
 
     # {section: {team: set(person)}}
     section_teams: dict[int, dict[int, set[str]]] = {section: defaultdict(set) for section in sections}
+    skip_count = 0
     while rankings := db.select_temp_top_rank(conn):
+      if not any(team_sizes[section] for section in sections):
+        click.secho("No more teams to assign; stopping...", fg="red")
+        break
       click.secho(f"Top rankings: {rankings}", fg="blue")
-      choice = random.choice(rankings)
-      click.secho(f"Chosen assignment: {choice}", fg="blue")
-      person, section, team = choice
-      assigned_team = section_teams[section][team]
-      if db.is_excluded(conn, person, list(assigned_team)):
-        click.secho(f"{person} excluded by rule with somebody already in {{section: {section}, team {team}}}; skipping...", fg="yellow")
-        continue
-      assigned_team.add(person)
-      if len(assigned_team) == team_sizes[section][0]:
-        team_sizes[section].pop(0)
-        db.delete_temp_rankings_for_team(conn, team)
-        teams_assigned[section].append(assigned_team)
-      db.delete_temp_rankings(conn, person)
+      while rankings:
+        choice = random.choice(rankings)
+        rankings.remove(choice)
+        click.secho(f"Chosen assignment: {choice}", fg="blue")
+        person, section, team = choice
+        assigned_team = section_teams[section][team]
+        if db.is_excluded(conn, person, list(assigned_team)):
+          click.secho(f"{person} excluded by rule with somebody already in {{section: {section}, team {team}}}; skipping...", fg="yellow")
+          skip_count += 1
+          possibilities = ((len(rankings)+1)*len(rankings)) / 2  # n plus 1 choose 2; or the nth triangular number; or the arithmetic series: sum(i, i, 1, n)
+          if skip_count >= possibilities:  # nobody can pair with this person because everybody is excluded
+            click.secho("Too many exclusions; no more rankings to assign; stopping...", fg="red")
+            break
+          click.secho(f"Randomizing {person}'s ranking for {section}:{team}", fg="blue")
+          db.randomize_temp_ranking(conn, person, team, len(rankings))
+          continue
+        skip_count = 0
+        if team_sizes[section]:
+          assigned_team.add(person)
+          click.secho(f"Assigned {person} to {section}:{team}", fg="blue")
+          click.secho(f"Team sizes: {team_sizes}; section_teams: {section_teams}", fg="blue")
+          if len(assigned_team) == team_sizes[section][0]:  # first to the finish
+            click.secho(f"First to the finish: {section}:{team}:{assigned_team}", fg="blue")
+            team_sizes[section].pop(0)  # pop the first team size
+            db.ignore_temp_rankings_for_team(conn, team)  # ignore the team from the rankings
+            db.ignore_temp_rankings_for_names(conn, list(assigned_team))  # ignore the team members from the rankings
+            # remove members from all other teams they were temporary members of
+            for tdx, section_team in section_teams[section].items():
+              if tdx != team:
+                section_team -= assigned_team
+              else:
+                for sdx in range(1, len(section_teams)+1):
+                  click.secho(f"sdx: {sdx}, section: {section}, team: {team}", fg="yellow")
+                  if sdx == section:
+                    continue
+                  if team in section_teams[sdx]:
+                    # click.secho(f"sdx: {sdx}, team: {team}", fg="yellow")
+                    del section_teams[sdx][team]
+            click.secho(f"Removed {assigned_team} from all other teams; section_teams: {section_teams}", fg="blue")
+            teams_assigned[section].append(list(assigned_team))
+            rankings = db.select_temp_top_rank(conn)
+        if not click.confirm(f"Continue assigning teams?", default=True):
+          break
 
     click.secho(f"Teams assigned: {teams_assigned}", fg="green")
 
 @cli.command()
 @click.argument("db_file", type=click.Path(exists=True, path_type=Path))
-def validate(db_file: Path):
+def validate(db_file: Path) -> bool:
   """Validate rankings data for completeness and correctness."""
+  if not db_file.exists():
+    click.secho(f"Error: Database file {db_file} does not exist", fg="red")
+    sys.exit(1)
+
+  has_errors = False
   with sql.connect(db_file) as conn:
     errors = db.validate_rankings(conn)
     
     for error_type, error_list in errors.items():
       if error_list:
+        has_errors = True
         click.secho(f"\n{error_type.replace('_', ' ').title()}:", fg="red")
         for error in error_list:
           click.secho(f"  • {error}", fg="red")
     
-    if not errors:
-      click.secho("✅ All rankings are valid!", fg="green")
-    else:
-      click.secho(f"\n❌ Found validation errors in {db_file}", fg="red")
+  if has_errors:
+    click.secho(f"\n❌ Found validation errors in {db_file}", fg="red")
+  else:
+    click.secho("✅ All rankings are valid!", fg="green")
+  return has_errors
 
 if __name__ == "__main__":
   cli()

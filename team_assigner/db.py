@@ -63,7 +63,7 @@ def num_teams(conn: sql.Connection) -> int:
   """Get the number of teams in the database."""
   return conn.execute("SELECT COUNT(*) FROM teams").fetchone()[0]
 
-def insert_rankings(conn: sql.Connection, name: str, rankings: list[int]) -> None:
+def insert_rankings(conn: sql.Connection, name: str, rankings: Iterable[int]) -> None:
   for team_index, rank in enumerate(rankings):
     conn.execute(
       "INSERT INTO rankings (name, team, rank) VALUES (?, ?, ?)",
@@ -86,6 +86,7 @@ def validate_rankings(conn: sql.Connection) -> dict[str, list[str]]:
     - 'incomplete_rankings': People who haven't ranked all teams
   """
   errors = {
+    'missing_people': [],
     'missing_ranks': [],
     'duplicate_ranks': [],
     'invalid_ranks': [],
@@ -99,6 +100,13 @@ def validate_rankings(conn: sql.Connection) -> dict[str, list[str]]:
   
   # Get all people who have submitted rankings
   people = conn.execute("SELECT DISTINCT name FROM rankings").fetchall()
+  required_people = set(conn.execute("SELECT DISTINCT name FROM people_sections").fetchall())
+
+  if set(people) != required_people:
+    missing_people = [missing[0] for missing in required_people - set(people)]
+    errors['missing_people'].append(
+      f"People missing from rankings: {sorted(missing_people)}"
+    )
   
   for (person,) in people:
     # Get all ranks for this person
@@ -157,7 +165,7 @@ def create_temp_rankings(conn: sql.Connection) -> None:
   conn.execute(
     """
     CREATE TEMPORARY TABLE IF NOT EXISTS temp_rankings AS
-    SELECT r.name, ps.section, r.team, r.rank
+    SELECT r.name, ps.section, r.team, r.rank, false as excluded
     FROM rankings r
     JOIN people_sections ps ON r.name = ps.name
     """
@@ -172,10 +180,24 @@ def select_temp_top_rank(conn: sql.Connection) -> list[tuple[str, int, int]]:
       name, section, team,
       row_number() OVER (PARTITION BY name, section ORDER BY rank ASC) AS rn
     FROM temp_rankings
+    WHERE excluded = false
   )
   WHERE rn=1;
   """
   return conn.execute(query).fetchall()
+
+def ignore_temp_rankings_for_names(conn: sql.Connection, names: Iterable[str]) -> None:
+  in_names = ",".join(f"'{name}'" for name in names)
+  conn.execute("UPDATE temp_rankings SET excluded = true WHERE name IN (?)", (in_names,))
+  conn.commit()
+
+def randomize_temp_ranking(conn: sql.Connection, name: str, team: int, num_teams: int) -> None:
+  conn.execute("UPDATE temp_rankings SET rank = (abs(random()) % ?) + 1 WHERE name = ? AND team = ?", (num_teams, name, team))
+  conn.commit()
+
+def ignore_temp_rankings_for_team(conn: sql.Connection, team: int) -> None:
+  conn.execute("UPDATE temp_rankings SET excluded = true WHERE team = ?", (team,))
+  conn.commit()
 
 def delete_temp_rankings(conn: sql.Connection, name: str) -> None:
   conn.execute("DELETE FROM temp_rankings WHERE name = ?", (name,))
@@ -197,7 +219,7 @@ def is_excluded(conn: sql.Connection, root: str, targets: Iterable[str]) -> bool
     {"root": root, "targets": in_targets},
   ).fetchone()[0] > 0
 
-def insert_people_sections(conn: sql.Connection, names: list[str], section: int) -> None:
+def insert_people_sections(conn: sql.Connection, names: Iterable[str], section: int) -> None:
   conn.executemany(
     """INSERT INTO people_sections (name, section) VALUES (?, ?)
     ON CONFLICT(name) DO UPDATE
@@ -206,7 +228,7 @@ def insert_people_sections(conn: sql.Connection, names: list[str], section: int)
   )
   conn.commit()
 
-def insert_teams(conn: sql.Connection, values: list[tuple[int, str]]) -> None:
+def insert_teams(conn: sql.Connection, values: Iterable[tuple[int, str]]) -> None:
   conn.executemany(
     """INSERT INTO teams (id, name) VALUES (?, ?)
     ON CONFLICT(id) DO UPDATE
@@ -218,7 +240,7 @@ def insert_teams(conn: sql.Connection, values: list[tuple[int, str]]) -> None:
 def fetch_num_people_per_section(conn: sql.Connection) -> dict[int, int]:
   return {row[0]: row[1] for row in conn.execute("SELECT section, COUNT(*) FROM people_sections GROUP BY section").fetchall()}
 
-def insert_exclusions(conn: sql.Connection, exclusions: list[tuple[str, str]]) -> None:
+def insert_exclusions(conn: sql.Connection, exclusions: Iterable[tuple[str, str]]) -> None:
   conn.executemany("INSERT INTO exclusions (name1, name2) VALUES (?, ?)", exclusions)
   conn.commit()
 
