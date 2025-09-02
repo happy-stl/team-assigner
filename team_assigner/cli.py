@@ -64,11 +64,12 @@ def cli():
 @click.argument("db_file", type=click.Path(path_type=Path))
 def init(db_file: Path):
   """Initialize the database."""
-  if db_file.exists() and click.confirm(f"Database file {db_file} already exists; overwrite?", default=False):
-    db_file.unlink()
-  else:
-    click.secho(f"Database file {db_file} already exists; not overwriting", fg="red")
-    sys.exit(1)
+  if db_file.exists():
+    if click.confirm(f"Database file {db_file} already exists; overwrite?", default=False):
+      db_file.unlink()
+    else:
+      click.secho(f"Database file {db_file} already exists; not overwriting", fg="red")
+      sys.exit(1)
 
   with sql.connect(db_file) as conn:
     db.truncate_teams(conn)
