@@ -1,5 +1,5 @@
 team:
   min: 2
-  exclusions:
-    - John,Linda
-    - Mike,Emma
+  match_exclusions:
+    John: [Linda]
+    Mike: [Emma]

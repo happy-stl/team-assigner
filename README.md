@@ -54,15 +54,9 @@ The tool uses a comprehensive YAML configuration file that defines teams, people
 ```yaml
 # People organization by sections
 people:
-  sections:
-    001:  # Section ID
-      - John
-      - Linda
-      - James
-    002:
-      - Sarah
-      - Mike
-      - Emma
+  sections:  # Section IDs are the keys.
+    001: [John, Linda, James]
+    002: [Sarah, Mike, Emma]
 
 # Team configuration
 teams:
@@ -79,23 +73,8 @@ teams:
   # People that cannot be on the same team
   # Note: Exclusions are bidirectional
   match_exclusions:
-    John:
-      - Linda  # John and Linda cannot be together
-    Sarah:
-      - Mike
-      - Emma   # Sarah cannot be with Mike or Emma
-```
-
-### Simplified Configuration (Legacy Format)
-
-For simpler use cases, you can use the legacy format:
-
-```yaml
-team:
-  min: 2
-  exclusions:
-    - John,Linda
-    - Mike,Emma
+    John: [Linda]  # John and Linda cannot be together
+    Sarah: [Mike, Emma]  # Sarah cannot be with Mike or Emma
 ```
 
 ### Configuration Options
