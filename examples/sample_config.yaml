@@ -1,5 +1,0 @@
-team:
-  min: 2
-  match_exclusions:
-    John: [Linda]
-    Mike: [Emma]

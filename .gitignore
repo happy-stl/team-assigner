@@ -1,129 +1,23 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+# Go build output (root-level binary only; must not match cmd/team-assigner/)
+/team-assigner
+*.exe
+*.out
+/bin/
+/dist/
 
-# C extensions
-*.so
+# Go caches and coverage
+*.test
+*.coverprofile
+coverage.html
 
-# Distribution / packaging
-dist/
-downloads/
-sdist/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Survey responses are real people's data: never track them.
+# Only hand-made synthetic examples under testdata/ are committed.
+*.csv
+!testdata/**/*.csv
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-# Translations
-*.mo
-*.pot
-
-*.log
-
-# PyBuilder
-.pybuilder/
-target/
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# IPython
-profile_default/
-ipython_config.py
-
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
-
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# pytype static type analyzer
-.pytype/
-
-# Cython debug symbols
-cython_debug/
-
-# IDE files
+# OS / editor noise
+.DS_Store
 .idea/
 .vscode/
 *.swp
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Temporary files
-*.tmp
-*.temp
 *~
-
-# Log files
-*.log
-
-# Database files
-*.db
-*.sqlite
-*.sqlite3
-
-# Data files
-*.csv
-*.json
-*.xml
-*.xlsx
-*.xls
-
-# Model files
-*.pkl
-*.pickle
-*.joblib
-*.h5
-*.hdf5
-*.pt
-*.pth
-*.onnx
-
-# Configuration files with secrets
-.env.local
-.env.*.local
-config.ini
-secrets.yaml
-secrets.json
-
-# Exclusions
-!tests/**/*.csv

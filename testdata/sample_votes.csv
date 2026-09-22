@@ -1,0 +1,14 @@
+timestamp,email,section,Atlas,Beacon,Cipher,Drift,person match
+2026-09-01T09:00:00,amy@example.com,101,1,2,3,4,+ben@example.com
+2026-09-01T09:05:00,ben@example.com,101,2,1,3,4,+amy@example.com
+2026-09-01T09:07:00,cat@example.com,101,3,1,2,4,
+2026-09-01T09:10:00,dan@example.com,101,4,3,2,1,eli@example.com
+2026-09-01T09:12:00,eli@example.com,101,1,3,2,-1,
+2026-09-01T09:15:00,fay@example.com,101,2,1,-1,3,+gus@example.com
+2026-09-01T09:20:00,gus@example.com,101,3,2,1,4,
+2026-09-01T09:22:00,hal@example.com,102,1,2,3,4,
+2026-09-01T09:25:00,ida@example.com,102,1,3,2,4,hal@example.com
+2026-09-01T09:30:00,joy@example.com,102,2,1,4,3,
+2026-09-01T09:33:00,kim@example.com,102,3,3,1,2,
+2026-09-01T09:35:00,leo@example.com,102,-1,1,2,3,
+2026-09-01T09:40:00,meg@example.com,102,4,3,2,1,

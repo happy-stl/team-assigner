@@ -1,255 +1,184 @@
 # Team Assigner
 
-A database-driven tool to assign people to teams based on their preferences and rankings. The tool uses a SQLite database to store configuration, rankings, and manage the assignment process efficiently.
+A Go CLI that assigns people to teams straight off a survey CSV — no
+database, no config files. It reads one CSV of rankings, computes the
+assignment, and writes one CSV of teams.
 
-## Installation
+## Install
 
-Install the package using pip:
-
-```bash
-pip install team-assigner
-```
-
-Or install from source:
+Requires Go 1.24+.
 
 ```bash
-git clone https://github.com/grimwm/team-assigner
-cd team-assigner
-pip install -e .
+go build -o team-assigner ./cmd/team-assigner
 ```
 
-## Quick Start
-
-1. **Initialize a database:**
-   ```bash
-   team-assigner init my_project.db
-   ```
-
-2. **Load configuration:**
-   ```bash
-   team-assigner config my_project.db config.yaml
-   ```
-
-3. **Store individual rankings:**
-   ```bash
-   team-assigner store my_project.db --input person1.txt --input person2.txt
-   ```
-
-4. **Validate data:**
-   ```bash
-   team-assigner validate my_project.db
-   ```
-
-5. **Assign teams:**
-   ```bash
-   team-assigner assign my_project.db
-   ```
-
-## Configuration
-
-The tool uses a comprehensive YAML configuration file that defines teams, people sections, team sizes, and exclusions.
-
-### Complete Configuration Structure
-
-```yaml
-# People organization by sections
-people:
-  sections:  # Section IDs are the keys.
-    001: [John, Linda, James]
-    002: [Sarah, Mike, Emma]
-
-# Team configuration
-teams:
-  size:
-    min: 2  # Minimum team size
-
-  # Team names (ID: Name mapping)
-  names:
-    1: "Development Team"
-    2: "Design Team" 
-    3: "Marketing Team"
-    4: "Research Team"
-
-  # People that cannot be on the same team
-  # Note: Exclusions are bidirectional
-  match_exclusions:
-    John: [Linda]  # John and Linda cannot be together
-    Sarah: [Mike, Emma]  # Sarah cannot be with Mike or Emma
-```
-
-### Configuration Options
-
-- **`people.sections`**: Organize people into sections (useful for different departments, skill levels, etc.)
-- **`teams.size.min`**: Minimum number of people per team
-- **`teams.names`**: Human-readable names for each team (mapped by team ID)
-- **`teams.match_exclusions`**: Define people who cannot be placed on the same team
-
-## Rankings
-
-Individual rankings are stored in simple text files. Each person should have their own file containing their team preferences ranked from most preferred (1) to least preferred.
-
-### Rankings File Format
-
-Rankings can be provided in various formats:
-- Comma-separated: `1,3,2,4`
-- Space-separated: `1 3 2 4`
-- Newline-separated:
-  ```
-  1
-  3
-  2
-  4
-  ```
-- Mixed format: `1, 3 2,4`
-
-### Example Rankings
-
-If there are 4 teams, a person's rankings file might contain:
-```
-2  # First choice: Team 2
-1  # Second choice: Team 1  
-4  # Third choice: Team 4
-3  # Fourth choice: Team 3
-```
-
-## CLI Commands
-
-### `init <database>`
-Initialize a new SQLite database for the project.
+## Usage
 
 ```bash
-team-assigner init my_project.db
+# Check a survey file for errors without assigning:
+team-assigner validate -input votes.csv
+
+# Assign teams (seed is optional; without it the run is randomized):
+team-assigner assign -input votes.csv -output teams.csv -seed 1
+
+# Larger or smaller teams:
+team-assigner assign -input votes.csv -output teams.csv -max-size 5
+team-assigner assign -input votes.csv -output teams.csv -max-size 5 -min-size 2
 ```
 
-### `config <database> <config_file>`
-Load configuration from a YAML file into the database.
+`assign` prints a summary plus the seed on its own line, so any run can
+be reproduced exactly by passing that seed back with `-seed`.
+`-min-size` defaults to one less than `-max-size` (so the default is
+teams of 3–4). Exit codes: 0 means every constraint held, 1 means the
+output is a best-effort remap (details on stderr — see below), 2 means
+a usage or flag error.
+
+Try it with the bundled example (synthetic data):
 
 ```bash
-team-assigner config my_project.db config.yaml
+team-assigner assign -input testdata/sample_votes.csv -output /tmp/teams.csv -seed 1
 ```
 
-### `store <database> --input <file> [--input <file2> ...]`
-Store individual ranking files into the database.
+## Input layout
+
+The survey CSV has one header row plus one row per respondent:
+
+```
+timestamp, email, section, <team 1>, <team 2>, ..., <person match>
+```
+
+- `timestamp` is ignored.
+- `email` identifies the respondent.
+- `section` groups respondents. Only people in the same section may be
+  placed on the same team. A blank section puts everyone in one shared
+  section.
+- Each team column is headed by the team (project) name and holds that
+  respondent's rank: `-1` means "do not put me on this team", `1` is
+  their favorite, and larger numbers are progressively less liked. A
+  blank cell means no opinion: still placeable, but only as a last
+  resort. Anything else (`0`, below `-1`, non-numeric) is an error.
+- `person match` holds an optional constraint toward one other person:
+  a plain email means "do not team me with them" (an exclusion, honored
+  whichever side stated it), while an email beginning with `+` means "I
+  want to be teamed with them". A `+` want binds the pair to the same
+  team **only when both people name each other** — a two-way connection.
+  A one-sided `+` is kept as a soft preference (see scoring below).
+
+Every `person match` target must be a respondent in the file, nobody may
+name themselves, mutual `+` partners must share a section, and mutual
+partners may not simultaneously exclude each other.
+
+## Team sizes
+
+Each section is split into teams of `-min-size` to `-max-size` people
+(defaults 3–4). Splits use the fewest teams possible, preferring larger
+teams. Headcounts with no exact split don't fail: a 5-person section at
+3–4 becomes one team of five (kept together, one head over max) and the
+remap report says so — see below. Contradictory bounds (`-min-size`
+above `-max-size`, minimum below 1) are usage errors.
+
+## The formula
+
+Let rank(v, p) be respondent v's rank for project p (blank = worst,
+veto = forbidden) and let popularity(p) be the number of still
+unassigned respondents who ranked p as 1.
+
+1. **Load projects.** While a team still needs a project, take the most
+   popular not-yet-loaded project across all sections — ties go to the
+   leftmost CSV column — and seed it with one uniformly random
+   respondent who ranked it 1, opening a team in that respondent's
+   section. Every project gets its turn while slots last: projects
+   nobody ranked first are seeded by their closest-ranked respondent
+   instead, so a project goes teamless only when slots run out first —
+   those are listed in a stdout `note: no team for ...` line, which is
+   information, not a relaxation. Leftover slots after all projects
+   load reuse projects by the same popularity rule, seeded by each
+   section's closest-ranked respondent (stated ranks, then blanks,
+   then vetoes as a last resort).
+2. **Fill seats.** Seat everyone left with the assignment minimizing the
+   penalty tuple
+
+   (vetoes, exclusions, splits, rank)
+
+   compared lexicographically, where vetoes counts placements on −1
+   projects, exclusions counts co-seated excluded pairs, splits counts
+   separated mutual `+` pairs, and rank is total 4·rank minus `+`
+   affinity toward teammates (2 mutual, 1 one-sided, 0 otherwise).
+   Rank always outranks affinity, affinity outranks chance: remaining
+   ties — respondents who ranked a choice equally — are ordered uniformly
+   at random. Blanks cost more than any stated rank. This is the whole
+   formula, and it answers the infeasible case up front: a strict split
+   is exactly penalty (0, 0, 0, r), so when the CSV admits one, nothing
+   outranks it; when it does not, the same minimization keeps descending
+   — second-best choices, then third-best, and so on down the rabbit
+   hole until everyone is seated — with best choices everywhere else.
+
+Two deliberate choices deserve a note. First, filling is a global
+optimum per section rather than team-by-team greed: seating each team's
+closest match first can strand a respondent behind a veto or exclusion
+even when a valid split exists, and no reshuffling of ties escapes such
+dead ends. Optimizing lets fellow fans land together whenever any valid
+split allows it. Second, a seed can itself corner the remainder, so
+layouts are retried with fresh random choices (up to 32 attempts, stopping
+after 8 with no improvement, deterministic per seed), keeping the least
+penalty found.
+
+## When no strict split exists
+
+`assign` still writes the CSV — the best-effort remap — prints a summary
+naming the relaxed-constraint count, exits 1, and explains the why on
+stderr (capture it with `2> report.txt`):
+
+```
+no strict split exists; best-effort remap relaxes:
+  sizing: section "101" has 5 people, cannot split into teams of 3-4 → using 5
+  veto: dan@example.com on "Drift" (ranked -1); closest alternative "Blue" (rank 3)
+  exclusion: amy@example.com and lee@example.com share "Red" (excluded by amy@example.com)
+  split: hal@example.com and kim@example.com separated ("Red" vs "Blue")
+```
+
+Each line is one relaxed constraint: sizing deviations from the headcount
+split, veto placements with the closest non-vetoed alternative offered in
+that section (or "vetoed every project" when nothing better existed),
+co-seated exclusions with who stated them, and separated mutual pairs with
+both teams. `validate` predicts the two cheapest failures up front —
+unsplittable headcounts and respondents who vetoed every project — so run
+it first on a new file.
+
+## Output layout
+
+One row per team: the team name first, then the member emails.
+
+```
+Beacon,amy@example.com,ben@example.com,cat@example.com,dan@example.com
+Cipher,amy@example.com,ben@example.com,eli@example.com,gus@example.com
+```
+
+Rows sort by team name, emails sort within each row. Every respondent
+appears exactly once, on a team from their own section. On a strict
+split (exit 0) every team is within the size bounds, nobody sits on a
+vetoed project or beside an excluded person, and mutual `+` pairs are
+always together; on a remap (exit 1) the stderr report lists each
+exception.
+
+## Privacy note
+
+Survey responses are real people's data: `*.csv` files are git-ignored
+by default and only `testdata/` (hand-made synthetic examples) is
+tracked. Keep response files out of the repo.
+
+## Development
 
 ```bash
-team-assigner store my_project.db --input john.txt --input linda.txt --input james.txt
+make build       # compile to ./bin/team-assigner
+make test        # unit + CLI + end-to-end (synthetic fixtures only)
+make vet fmt     # static checks; fmt fails if gofmt wants changes
+make run-example # assign testdata/sample_votes.csv (SEED=7, MAX_SIZE=5, MIN_SIZE=2 overrides)
 ```
 
-### `validate <database>`
-Validate that all rankings data is complete and correct.
+Layout:
 
-```bash
-team-assigner validate my_project.db
-```
-
-### `assign <database> [--debug]`
-Run the team assignment algorithm.
-
-```bash
-team-assigner assign my_project.db
-# or with debug output
-team-assigner assign my_project.db --debug
-```
-
-### `truncate <database>`
-Clear all rankings data (keeps configuration).
-
-```bash
-team-assigner truncate my_project.db
-```
-
-## Complete Workflow Example
-
-Here's a complete example of using the tool:
-
-```bash
-# 1. Initialize database
-team-assigner init company_hackathon.db
-
-# 2. Create and load configuration
-cat > config.yaml << EOF
-people:
-  sections:
-    001:  # Engineering
-      - Alice
-      - Bob
-      - Charlie
-    002:  # Design  
-      - Diana
-      - Eve
-      - Frank
-
-teams:
-  size:
-    min: 2
-  names:
-    1: "Web App Team"
-    2: "Mobile Team"
-    3: "AI/ML Team"
-  match_exclusions:
-    Alice:
-      - Bob  # Alice and Bob had conflicts before
-EOF
-
-team-assigner config company_hackathon.db config.yaml
-
-# 3. Collect individual rankings
-echo "1,3,2" > alice_rankings.txt    # Alice prefers: Web App, AI/ML, Mobile
-echo "2,1,3" > bob_rankings.txt      # Bob prefers: Mobile, Web App, AI/ML
-echo "3,2,1" > charlie_rankings.txt  # Charlie prefers: AI/ML, Mobile, Web App
-echo "1,2,3" > diana_rankings.txt    # Diana prefers: Web App, Mobile, AI/ML
-echo "2,3,1" > eve_rankings.txt      # Eve prefers: Mobile, AI/ML, Web App
-echo "3,1,2" > frank_rankings.txt    # Frank prefers: AI/ML, Web App, Mobile
-
-# 4. Store rankings
-team-assigner store company_hackathon.db \
-  --input alice_rankings.txt \
-  --input bob_rankings.txt \
-  --input charlie_rankings.txt \
-  --input diana_rankings.txt \
-  --input eve_rankings.txt \
-  --input frank_rankings.txt
-
-# 5. Validate data
-team-assigner validate company_hackathon.db
-
-# 6. Assign teams
-team-assigner assign company_hackathon.db
-```
-
-## Team Assignment Output
-
-The assignment algorithm will output the final team assignments to the console, showing which people are assigned to which teams within their sections:
-
-```
-Teams assigned:
-  Section 1:
-    Team 1 (Web App Team):
-      - Alice
-      - Charlie
-    Team 2 (Mobile Team):
-      - Bob
-  Section 2:
-    Team 1 (Web App Team):
-      - Diana
-    Team 2 (Mobile Team):
-      - Eve
-      - Frank
-```
-
-## Algorithm
-
-The team assignment algorithm works by:
-
-1. **Creating temporary rankings** from the stored data
-2. **Finding the most popular team** among all top preferences
-3. **Selecting people** who ranked that team highest
-4. **Checking exclusions** to ensure incompatible people aren't grouped
-5. **Filling teams** to the minimum size requirement
-6. **Repeating** until all people are assigned
-
-The algorithm respects:
-- Individual preferences (higher ranked preferences are prioritized)
-- Exclusion rules (people who cannot work together)
-- Minimum team size requirements
-- Section boundaries (people are assigned within their sections)
+- `cmd/team-assigner/` — CLI (`assign`, `validate`).
+- `internal/survey/` — CSV parsing and cross-row validation.
+- `internal/assign/` — sizing, the loading ritual, and the optimal fill.
+- `testdata/sample_votes.csv` — synthetic example exercised by the tests.
