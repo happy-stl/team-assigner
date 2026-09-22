@@ -45,6 +45,13 @@ type Person struct {
 	// Prefer is the normalized email (without the '+') of someone
 	// this person wants to be teamed with ("" when absent).
 	Prefer string
+	// Override is the team name from the override column as written
+	// ("" when blank or the column is absent): a teacher mandate to
+	// join that team regardless of ranks.
+	Override string
+	// OverrideIdx is the mandated team index, -1 when none.
+	// Resolved by Validate.
+	OverrideIdx int
 }
 
 // Survey is a parsed survey: team names in CSV column order plus
@@ -77,13 +84,26 @@ func Parse(r io.Reader) (*Survey, error) {
 		return nil, fmt.Errorf("csv is empty")
 	}
 	header := rows[0]
-	if len(header) < 5 {
-		return nil, fmt.Errorf(
-			"header has %d columns, need at least 5 (timestamp, email, section, one team, person match)",
-			len(header))
+	// An optional override column comes last, headed "override"
+	// (case-insensitive); person match is the last column otherwise.
+	matchIdx := len(header) - 1
+	overrideIdx := -1
+	if keyOf(header[matchIdx]) == "override" {
+		overrideIdx = matchIdx
+		matchIdx--
 	}
-	teams := make([]string, 0, len(header)-4)
-	for i := 3; i < len(header)-1; i++ {
+	minCols := 5
+	want := "timestamp, email, section, one team, person match"
+	if overrideIdx != -1 {
+		minCols = 6
+		want += ", override"
+	}
+	if len(header) < minCols {
+		return nil, fmt.Errorf("header has %d columns, need at least %d (%s)",
+			len(header), minCols, want)
+	}
+	teams := make([]string, 0, matchIdx-3)
+	for i := 3; i < matchIdx; i++ {
 		name := normalize(header[i])
 		if name == "" {
 			return nil, fmt.Errorf("team column %d has an empty name", i+1)
@@ -96,7 +116,7 @@ func Parse(r io.Reader) (*Survey, error) {
 		if isBlankRow(row) {
 			continue
 		}
-		// Pad short rows (a missing trailing person-match cell is
+		// Pad short rows (a missing trailing override cell is
 		// common); reject long rows instead of silently dropping data.
 		if len(row) < len(header) {
 			padded := make([]string, len(header))
@@ -107,7 +127,7 @@ func Parse(r io.Reader) (*Survey, error) {
 			return nil, fmt.Errorf("row %d has %d fields, header has %d",
 				ri+2, len(row), len(header))
 		}
-		p, err := parsePerson(row, teams, ri+2)
+		p, err := parsePerson(row, teams, matchIdx, overrideIdx, ri+2)
 		if err != nil {
 			return nil, err
 		}
@@ -132,12 +152,12 @@ func isBlankRow(row []string) bool {
 	return true
 }
 
-func parsePerson(row []string, teams []string, rownum int) (*Person, error) {
+func parsePerson(row []string, teams []string, matchIdx, overrideIdx, rownum int) (*Person, error) {
 	email := normalize(row[1])
 	if email == "" {
 		return nil, fmt.Errorf("row %d: missing email", rownum)
 	}
-	p := &Person{Email: email, Key: keyOf(email), Section: normalize(row[2])}
+	p := &Person{Email: email, Key: keyOf(email), Section: normalize(row[2]), OverrideIdx: -1}
 
 	p.Ranks = make([]*int, len(teams))
 	for i := 0; i < len(teams); i++ {
@@ -155,7 +175,7 @@ func parsePerson(row []string, teams []string, rownum int) (*Person, error) {
 		p.Ranks[i] = &vv
 	}
 
-	match := normalize(row[len(row)-1])
+	match := normalize(row[matchIdx])
 	switch {
 	case match == "":
 		// no constraint
@@ -168,15 +188,39 @@ func parsePerson(row []string, teams []string, rownum int) (*Person, error) {
 	default:
 		p.Exclude = keyOf(match)
 	}
+	if overrideIdx >= 0 {
+		p.Override = normalize(row[overrideIdx])
+	}
 	return p, nil
 }
 
 // Validate checks cross-row references (person-match targets must be
-// known respondents, nobody may name themselves) and that mutual '+'
-// wants only join people in the same section — a mutual want across
+// known respondents, nobody may name themselves), resolves each
+// override to a team index (a non-blank override matching no team is
+// an error naming the known teams), and checks that mutual '+' wants
+// only join people in the same section — a mutual want across
 // sections could never be satisfied since teams never span sections.
 func (s *Survey) Validate() error {
 	for _, p := range s.People {
+		if p.Override != "" {
+			want := keyOf(p.Override)
+			var matches []int
+			for i, name := range s.Teams {
+				if keyOf(name) == want {
+					matches = append(matches, i)
+				}
+			}
+			switch len(matches) {
+			case 0:
+				return fmt.Errorf("%s has override %q, which matches no known team name (teams: %s)",
+					p.Email, p.Override, strings.Join(s.Teams, ", "))
+			case 1:
+				p.OverrideIdx = matches[0]
+			default:
+				return fmt.Errorf("%s has override %q, which matches multiple teams",
+					p.Email, p.Override)
+			}
+		}
 		for _, target := range []string{p.Exclude, p.Prefer} {
 			if target == "" {
 				continue

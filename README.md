@@ -63,6 +63,17 @@ timestamp, email, section, <team 1>, <team 2>, ..., <person match>
   want to be teamed with them". A `+` want binds the pair to the same
   team **only when both people name each other** — a two-way connection.
   A one-sided `+` is kept as a soft preference (see scoring below).
+- An optional `override` column may come last (headed `override`,
+  case-insensitive): a teacher mandate. A blank cell means no override;
+  anything else must match a team name (case-insensitive) or validation
+  fails naming the known teams. A matched respondent joins a team
+  playing that project regardless of ranks — overrides seed first and
+  restrict the fill — while everything else (sections, vetoes,
+  exclusions, pairs) still applies and is still reported. Section still
+  binds: the mandate picks the project, not the section, so a person
+  whose section fields no team on that project fails loudly instead of
+  landing elsewhere. Unsatisfiable mandates (more demanders than seats)
+  fail the same way.
 
 Every `person match` target must be a respondent in the file, nobody may
 name themselves, mutual `+` partners must share a section, and mutual
@@ -83,11 +94,12 @@ Let rank(v, p) be respondent v's rank for project p (blank = worst,
 veto = forbidden) and let popularity(p) be the number of still
 unassigned respondents who ranked p as 1.
 
-1. **Load projects.** While a team still needs a project, take the most
-   popular not-yet-loaded project across all sections — ties go to the
-   leftmost CSV column — and seed it with one uniformly random
-   respondent who ranked it 1, opening a team in that respondent's
-   section. Every project gets its turn while slots last: projects
+1. **Load projects.** Teacher overrides first (most demanded unloaded
+   project, seeded by a demander). Then, while a team still needs a
+   project, take the most popular not-yet-loaded project across all
+   sections — ties go to the leftmost CSV column — and seed it with one
+   uniformly random respondent who ranked it 1, opening a team in that
+   respondent's section. Every project gets its turn while slots last: projects
    nobody ranked first are seeded by their closest-ranked respondent
    instead, so a project goes teamless only when slots run out first —
    those are listed in a stdout `note: no team for ...` line, which is
@@ -147,9 +159,12 @@ it first on a new file.
 
 ## Output layout
 
-One row per team: the team name first, then the member emails.
+A header row of `Team,Person 1, ...` (spanning the largest team) followed
+by one row per team: the team name first, then the member emails.
+Shorter rows are padded with blanks so the CSV stays rectangular.
 
 ```
+Team,Person 1,Person 2,Person 3,Person 4
 Beacon,amy@example.com,ben@example.com,cat@example.com,dan@example.com
 Cipher,amy@example.com,ben@example.com,eli@example.com,gus@example.com
 ```

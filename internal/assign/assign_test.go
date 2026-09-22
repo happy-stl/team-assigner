@@ -496,6 +496,100 @@ func TestEveryProjectLoads(t *testing.T) {
 	}
 }
 
+func TestOverrideHonored(t *testing.T) {
+	// a ranks Blue first but the teacher overrides them onto Red:
+	// they land on Red with no relaxation needed.
+	s := mustSurvey(t, `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,3,1,,Red
+2024-01-02,b@example.com,1,1,2,,
+2024-01-03,c@example.com,1,1,2,,
+2024-01-04,d@example.com,1,2,1,,
+`)
+	for _, seed := range []int64{1, 2, 3} {
+		slots, report, err := Assign(s, rand.New(rand.NewSource(seed)), 3, 4)
+		if err != nil {
+			t.Fatalf("seed %d: Assign = %v", seed, err)
+		}
+		checkInvariants(t, s, slots, report, 3, 4)
+		got := teamOf(slots, "a@example.com")
+		if got == nil || s.Teams[got.Project] != "Red" {
+			t.Fatalf("seed %d: override ignored", seed)
+		}
+	}
+}
+
+func TestOverrideLoadsUnpopular(t *testing.T) {
+	// Nobody ranks Green first, but a is overridden onto it: Green
+	// still loads exactly once, seeded by its demander.
+	s := mustSurvey(t, `timestamp,email,section,Red,Blue,Green,person match,override
+2024-01-01,a@example.com,1,1,2,5,,Green
+2024-01-02,b@example.com,1,1,2,3,,
+2024-01-03,c@example.com,1,1,2,3,,
+2024-01-04,d@example.com,1,1,2,3,,
+2024-01-05,e@example.com,1,1,2,3,,
+2024-01-06,f@example.com,1,2,1,2,,
+2024-01-07,g@example.com,1,2,1,2,,
+2024-01-08,h@example.com,1,2,1,2,,
+2024-01-09,i@example.com,1,3,1,2,,
+`)
+	for _, seed := range []int64{1, 2, 3} {
+		slots, report, err := Assign(s, rand.New(rand.NewSource(seed)), 3, 4)
+		if err != nil {
+			t.Fatalf("seed %d: Assign = %v", seed, err)
+		}
+		checkInvariants(t, s, slots, report, 3, 4)
+		seen := map[string]int{}
+		for _, slot := range slots {
+			seen[s.Teams[slot.Project]]++
+		}
+		if len(seen) != 3 || seen["Green"] != 1 {
+			t.Fatalf("seed %d: projects = %v, want each once", seed, seen)
+		}
+		if got := teamOf(slots, "a@example.com"); got == nil || s.Teams[got.Project] != "Green" {
+			t.Fatalf("seed %d: overrider not on Green", seed)
+		}
+	}
+}
+
+func TestOverrideConflictFailsLoudly(t *testing.T) {
+	// Four overriders onto one team of three: unsatisfiable, so a
+	// loud error instead of silent disobedience.
+	s := mustSurvey(t, `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,1,2,,Red
+2024-01-02,b@example.com,1,1,2,,Red
+2024-01-03,c@example.com,1,1,2,,Red
+2024-01-04,d@example.com,1,1,2,,Red
+2024-01-05,e@example.com,1,1,2,,
+2024-01-06,f@example.com,1,2,1,,
+`)
+	_, _, err := Assign(s, rand.New(rand.NewSource(1)), 3, 4)
+	if err == nil || !strings.Contains(err.Error(), "override") {
+		t.Fatalf("Assign = %v, want override error", err)
+	}
+}
+
+func TestOverrideVetoReported(t *testing.T) {
+	// The teacher can force someone onto a vetoed team; the mandate
+	// wins but the veto is still reported.
+	s := mustSurvey(t, `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,-1,2,,Red
+2024-01-02,b@example.com,1,1,2,,
+2024-01-03,c@example.com,1,1,2,,
+2024-01-04,d@example.com,1,1,2,,
+`)
+	slots, report, err := Assign(s, rand.New(rand.NewSource(1)), 3, 4)
+	if err != nil {
+		t.Fatalf("Assign = %v", err)
+	}
+	seatedOnce(t, s, slots)
+	if got := teamOf(slots, "a@example.com"); got == nil || s.Teams[got.Project] != "Red" {
+		t.Fatalf("override ignored")
+	}
+	if report.Clean() || len(report.Vetoes) != 1 || report.Vetoes[0].Email != "a@example.com" {
+		t.Fatalf("want one veto note for a, got %+v", report)
+	}
+}
+
 func TestUnassignedProjectsNoted(t *testing.T) {
 	// Three people, one slot, two projects: only the most popular
 	// loads. The other is listed as unassigned — information, not a
@@ -650,10 +744,13 @@ func TestWriteCSVShape(t *testing.T) {
 		t.Fatalf("WriteCSV = %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("rows = %d, want 2:\n%s", len(lines), buf.String())
+	if len(lines) != 3 {
+		t.Fatalf("rows = %d, want header + 2 teams:\n%s", len(lines), buf.String())
 	}
-	for _, line := range lines {
+	if lines[0] != "Team,Person 1,Person 2,Person 3" {
+		t.Fatalf("header = %q", lines[0])
+	}
+	for _, line := range lines[1:] {
 		cells := strings.Split(line, ",")
 		if len(cells) != 4 { // team name + 3 members
 			t.Fatalf("row %q has %d cells, want 4", line, len(cells))

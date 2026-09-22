@@ -49,6 +49,59 @@ func TestParseLayout(t *testing.T) {
 	}
 }
 
+func TestParseOverrideColumn(t *testing.T) {
+	s := mustParse(t, `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,1,2,,Blue
+2024-01-02,b@example.com,1,2,1,,
+2024-01-03,c@example.com,1,1,2,,red
+`)
+	if len(s.Teams) != 2 {
+		t.Fatalf("teams = %v, override column leaked in", s.Teams)
+	}
+	a := s.ByKey["a@example.com"]
+	if a.Override != "Blue" || a.OverrideIdx != -1 {
+		t.Fatalf("override not staged for validation: %+v", a)
+	}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("Validate = %v", err)
+	}
+	if a.OverrideIdx != 1 {
+		t.Fatalf("a.OverrideIdx = %d, want 1 (Blue)", a.OverrideIdx)
+	}
+	c := s.ByKey["c@example.com"]
+	if c.OverrideIdx != 0 {
+		t.Fatalf("override match should ignore case: %+v", c)
+	}
+	if b := s.ByKey["b@example.com"]; b.OverrideIdx != -1 {
+		t.Fatalf("blank override should stay unset: %+v", b)
+	}
+}
+
+func TestParseOverrideErrors(t *testing.T) {
+	// Unknown team fails validity naming the known teams.
+	s := mustParse(t, `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,1,2,,Green
+`)
+	err := s.Validate()
+	if err == nil || !strings.Contains(err.Error(), "matches no known team name") {
+		t.Fatalf("Validate = %v, want unknown-team error", err)
+	}
+	if !strings.Contains(err.Error(), "Red, Blue") {
+		t.Fatalf("error should list valid teams: %v", err)
+	}
+
+	// Header spelling is case-insensitive.
+	s2 := mustParse(t, `timestamp,email,section,Red,person match,Override
+2024-01-01,a@example.com,1,1,,Red
+`)
+	if err := s2.Validate(); err != nil {
+		t.Fatalf("Validate = %v", err)
+	}
+	if s2.ByKey["a@example.com"].OverrideIdx != 0 {
+		t.Fatalf("Override header not recognized")
+	}
+}
+
 func TestParseSkipsBlankRowsAndShortRows(t *testing.T) {
 	s := mustParse(t, `timestamp,email,section,Alpha,person match
 

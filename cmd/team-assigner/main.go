@@ -93,11 +93,17 @@ func runAssign(args []string) int {
 	if seed.set {
 		useed = seed.val
 	}
+	min := resolveMinSize(*minSize, *maxSize)
+	if min < 1 || *maxSize < min {
+		fmt.Fprintf(os.Stderr, "error: -min-size %d and -max-size %d are contradictory\n",
+			*minSize, *maxSize)
+		return 2
+	}
 	rng := rand.New(rand.NewSource(useed))
-	slots, report, err := assign.Assign(s, rng, resolveMinSize(*minSize, *maxSize), *maxSize)
+	slots, report, err := assign.Assign(s, rng, min, *maxSize)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		return 2
+		return 1
 	}
 
 	out, err := os.Create(*output)
@@ -156,6 +162,11 @@ func runValidate(args []string) int {
 		sections[p.Section]++
 	}
 	min := resolveMinSize(*minSize, *maxSize)
+	if min < 1 || *maxSize < min {
+		fmt.Fprintf(os.Stderr, "error: -min-size %d and -max-size %d are contradictory\n",
+			*minSize, *maxSize)
+		return 2
+	}
 	for sec, n := range sections {
 		if _, err := assign.Partition(n, min, *maxSize); err != nil {
 			fmt.Fprintf(os.Stderr, "error: section %q: %v\n", sec, err)

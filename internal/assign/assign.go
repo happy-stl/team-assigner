@@ -14,15 +14,19 @@
 //     bestEffortPartition). A deviation-free split is the strict
 //     case; anything else is reported as a sizing relaxation.
 //
-//  2. Load projects: repeatedly take the most popular not-yet-loaded
-//     project — popularity(p) is the number of still-unassigned
-//     respondents who ranked p as 1, ties going to the leftmost CSV
-//     column — and seed it with one uniformly random respondent who
-//     ranked it 1, opening a team in that respondent's section.
-//     Slots left over once every loadable project is taken reuse
-//     projects the same way, seeded by each section's closest-ranked
-//     respondent (stated ranks, then blanks, then vetoes as a last
-//     resort).
+//  2. Load projects: teacher overrides first (most demanded unloaded
+//     project, seeded by a demander), then repeatedly the most popular
+//     not-yet-loaded project — popularity(p) is the number of
+//     still-unassigned respondents who ranked p as 1, ties going to
+//     the leftmost CSV column — seeded with one uniformly random
+//     respondent who ranked it 1, opening a team in that respondent's
+//     section. Slots left over once every loadable project is taken
+//     reuse projects the same way, seeded by each section's
+//     closest-ranked respondent (stated ranks, then blanks, then
+//     vetoes as a last resort). An overridden respondent seeds solely
+//     the mandated project; the fill seats them solely there, and an
+//     unsatisfiable mandate fails loudly instead of seating them
+//     elsewhere.
 //
 //  3. Fill every remaining seat with the closest feasible completion:
 //     the assignment of the unassigned to their sections' teams that
@@ -206,7 +210,8 @@ type engine struct {
 // people, relaxing constraints to a least-violation remap when no
 // strict split exists. It returns the slots in fill order plus a
 // Report naming each relaxed constraint (empty when strict). The
-// error is only for contradictory size bounds.
+// error is for contradictory size bounds or a teacher override no
+// layout can satisfy.
 func Assign(s *survey.Survey, rng *rand.Rand, minSize, maxSize int) ([]*Slot, *Report, error) {
 	// Sizing is deterministic and order-independent: settle it once
 	// instead of retrying something retries cannot fix.
@@ -217,6 +222,7 @@ func Assign(s *survey.Survey, rng *rand.Rand, minSize, maxSize int) ([]*Slot, *R
 	}
 	var bestSlots []*Slot
 	var best *Report
+	var lastErr error
 	stale := 0
 	for attempt := 0; attempt < maxAttempts && stale <= maxStaleAttempts; attempt++ {
 		e := newEngine(s, rand.New(rand.NewSource(rng.Int63())), minSize, maxSize)
@@ -224,9 +230,13 @@ func Assign(s *survey.Survey, rng *rand.Rand, minSize, maxSize int) ([]*Slot, *R
 		e.openSlotsFrom(sizing)
 		e.loadNewProjects()
 		if err := e.openRemainingSlots(); err != nil {
+			lastErr = err
 			continue
 		}
-		e.fillOptimized()
+		if err := e.fillOptimized(); err != nil {
+			lastErr = err
+			continue
+		}
 		rep := e.buildReport()
 		if rep.Clean() {
 			return e.orderedSlots(), rep, nil
@@ -237,6 +247,12 @@ func Assign(s *survey.Survey, rng *rand.Rand, minSize, maxSize int) ([]*Slot, *R
 		} else {
 			stale++
 		}
+	}
+	if best == nil {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no satisfiable layout found")
+		}
+		return nil, nil, lastErr
 	}
 	return bestSlots, best, nil
 }
@@ -392,12 +408,16 @@ func (e *engine) open(section string, proj int) *Slot {
 }
 
 // supporters lists unassigned respondents who ranked proj as 1 and
-// whose section still has an open slot they could join. Order is by
+// whose section still has an open slot they could join. Respondents
+// overridden onto another project never seed this one. Order is by
 // email for determinism; callers pick uniformly at random.
 func (e *engine) supporters(proj int) []*survey.Person {
 	var out []*survey.Person
 	for _, p := range e.s.People {
 		if _, ok := e.left[p.Key]; !ok {
+			continue
+		}
+		if p.OverrideIdx >= 0 && p.OverrideIdx != proj {
 			continue
 		}
 		if r := p.Ranks[proj]; r == nil || *r != 1 {
@@ -412,24 +432,61 @@ func (e *engine) supporters(proj int) []*survey.Person {
 	return out
 }
 
-// loadNewProjects seeds one team per project while slots last: the
-// most popular unloaded project first, then back to selection. Every
-// project loads — even one nobody ranked first, seeded by its
-// closest-ranked respondent — so a project goes without a team only
-// when slots run out first (recorded in the Report).
+// demand lists unassigned respondents overridden onto proj whose
+// section still has an open slot, in CSV order; callers pick
+// uniformly at random.
+func (e *engine) demand(proj int) []*survey.Person {
+	var out []*survey.Person
+	for _, p := range e.s.People {
+		if _, ok := e.left[p.Key]; !ok {
+			continue
+		}
+		if p.OverrideIdx != proj {
+			continue
+		}
+		if e.firstOpen(p.Section) == nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// loadNewProjects seeds one team per project while slots last: teacher
+// overrides first (most demanded unloaded project, then popularity,
+// then leftmost), then the most popular unloaded project, then back to
+// selection. Every project loads — even one nobody ranked first,
+// seeded by its closest-ranked respondent — so a project goes without
+// a team only when slots run out first (recorded in the Report).
 func (e *engine) loadNewProjects() {
 	for e.anyOpen() {
-		target := e.nextUnloadTarget()
-		if target == -1 {
-			return // every project loaded; reuse covers the rest
+		target, seed := -1, (*survey.Person)(nil)
+		// Teacher overrides: most demanded unloaded project first.
+		bd, bp := -1, -1
+		for proj := range e.s.Teams {
+			if e.loaded[proj] {
+				continue
+			}
+			d := e.demand(proj)
+			if len(d) == 0 {
+				continue
+			}
+			if pop := e.popularity(proj); len(d) > bd || (len(d) == bd && pop > bp) {
+				target, seed, bd, bp = proj, d[e.rng.Intn(len(d))], len(d), pop
+			}
 		}
-		var seed *survey.Person
-		if sup := e.supporters(target); len(sup) > 0 {
-			seed = sup[e.rng.Intn(len(sup))]
-		} else {
-			seed = e.seedAnywhere(target)
-			if seed == nil {
-				return // defensive; open slots imply candidates
+		if target == -1 {
+			target = e.nextUnloadTarget()
+			if target == -1 {
+				return // every project loaded; reuse covers the rest
+			}
+			if sup := e.supporters(target); len(sup) > 0 {
+				seed = sup[e.rng.Intn(len(sup))]
+			} else {
+				seed = e.seedAnywhere(target)
+				if seed == nil {
+					return // defensive; open slots imply candidates
+				}
 			}
 		}
 		slot := e.open(seed.Section, target)
@@ -500,6 +557,9 @@ func (e *engine) seedAnywhere(proj int) *survey.Person {
 		if e.firstOpen(p.Section) == nil {
 			continue
 		}
+		if p.OverrideIdx >= 0 && p.OverrideIdx != proj {
+			continue // overridden elsewhere; the fill seats them there
+		}
 		switch r := p.Ranks[proj]; {
 		case r == nil:
 			blanks = append(blanks, p)
@@ -523,11 +583,21 @@ func (e *engine) seedAnywhere(proj int) *survey.Person {
 	}
 }
 
-// openRemainingSlots loads projects onto slots left over after all
-// loadable projects are taken, reusing projects by the same
-// popularity rule and seeding each team's closest-ranked respondent.
+// openRemainingSlots loads projects onto slots left over after every
+// project has a team, reusing projects. A loaded project with more
+// unassigned override demand in a section than free seats on its
+// existing teams there reopens first, seeded by a demander;
+// otherwise the most popular project reopens, seeded by the section's
+// closest-ranked respondent.
 func (e *engine) openRemainingSlots() error {
 	for {
+		if section, target, ok := e.reuseTarget(); ok {
+			d := e.demandIn(section, target)
+			seed := d[e.rng.Intn(len(d))]
+			slot := e.open(section, target)
+			e.place(slot, seed)
+			continue
+		}
 		var section string
 		found := false
 		for _, slot := range e.slots {
@@ -564,6 +634,59 @@ func (e *engine) openRemainingSlots() error {
 		slot := e.open(section, target)
 		e.place(slot, seed)
 	}
+}
+
+// demandIn lists unassigned respondents in a section overridden onto
+// proj, in CSV order.
+func (e *engine) demandIn(section string, proj int) []*survey.Person {
+	var out []*survey.Person
+	for _, p := range e.s.People {
+		if _, ok := e.left[p.Key]; !ok || p.Section != section {
+			continue
+		}
+		if p.OverrideIdx == proj {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// reuseTarget finds a loaded project that still needs a fresh team: a
+// section with an open slot whose unassigned demanders outnumber the
+// free seats on its existing teams for that project. Sections are
+// scanned in slot order and projects in column order, so the first
+// hit wins deterministically.
+func (e *engine) reuseTarget() (string, int, bool) {
+	seen := map[string]bool{}
+	for _, slot := range e.slots {
+		sec := slot.Section
+		if seen[sec] || e.firstOpen(sec) == nil {
+			seen[sec] = true
+			continue
+		}
+		seen[sec] = true
+		free := map[int]int{}
+		for _, s2 := range e.slots {
+			if s2.Section == sec && s2.Project != -1 && e.loaded[s2.Project] {
+				free[s2.Project] += s2.Cap - len(s2.Members)
+			}
+		}
+		need := map[int][]*survey.Person{}
+		for _, p := range e.s.People {
+			if _, ok := e.left[p.Key]; !ok || p.Section != sec {
+				continue
+			}
+			if p.OverrideIdx >= 0 && e.loaded[p.OverrideIdx] {
+				need[p.OverrideIdx] = append(need[p.OverrideIdx], p)
+			}
+		}
+		for proj := range e.s.Teams {
+			if len(need[proj]) > free[proj] {
+				return sec, proj, true
+			}
+		}
+	}
+	return "", -1, false
 }
 
 // mostPopular returns the project with the most rank-1 votes among
@@ -613,6 +736,9 @@ func (e *engine) seedFor(section string, proj int) *survey.Person {
 	for _, p := range e.s.People {
 		if _, ok := e.left[p.Key]; !ok || p.Section != section {
 			continue
+		}
+		if p.OverrideIdx >= 0 && p.OverrideIdx != proj {
+			continue // overridden elsewhere; the fill seats them there
 		}
 		switch r := p.Ranks[proj]; {
 		case r == nil:
@@ -676,14 +802,18 @@ type fillItem struct {
 	// minRank bounds the search: cheapest rank over every slot,
 	// vetoes included, hence never above the true bill.
 	minRank int
+	// allow lists joinable slot indices: every slot, or solely the
+	// mandated project's teams for an overridden respondent.
+	allow []int
 }
 
 // fillOptimized seats every remaining respondent via the closest
 // feasible completion of each section, independently: constraints
 // never cross sections since teams never span them. Vetoes,
 // exclusions, and splits penalize rather than ban, so a completion
-// always exists and the Report carries any relaxation.
-func (e *engine) fillOptimized() {
+// always exists and the Report carries any relaxation — except an
+// unsatisfiable teacher override, which fails loudly.
+func (e *engine) fillOptimized() error {
 	bySection := map[string][]*Slot{}
 	for _, slot := range e.slots {
 		bySection[slot.Section] = append(bySection[slot.Section], slot)
@@ -703,8 +833,11 @@ func (e *engine) fillOptimized() {
 		if len(pool) == 0 {
 			continue
 		}
-		e.fillSection(bySection[sec], pool)
+		if err := e.fillSection(bySection[sec], pool); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // fillSection assigns pool to slots minimizing the penalty with a
@@ -712,7 +845,7 @@ func (e *engine) fillOptimized() {
 // penalized completions win uniformly at random. On node-budget
 // exhaustion the best completion found so far stands and the engine
 // records it (see Report.complete).
-func (e *engine) fillSection(slots []*Slot, pool []*survey.Person) {
+func (e *engine) fillSection(slots []*Slot, pool []*survey.Person) error {
 	items := make([]*fillItem, 0, len(pool))
 	for _, p := range pool {
 		item := &fillItem{p: p, minRank: math.MaxInt}
@@ -724,7 +857,24 @@ func (e *engine) fillSection(slots []*Slot, pool []*survey.Person) {
 		items = append(items, item)
 	}
 
-	// Most constrained items first (fewest non-veto slots); shuffle
+	// Allowed slots per item: an overridden respondent may join
+	// solely teams playing the mandated project. Missing allowed
+	// slots fail loudly below instead of silently seating them
+	// elsewhere.
+	for _, item := range items {
+		for si, slot := range slots {
+			if item.p.OverrideIdx >= 0 && slot.Project != item.p.OverrideIdx {
+				continue
+			}
+			item.allow = append(item.allow, si)
+		}
+		if len(item.allow) == 0 {
+			return fmt.Errorf("cannot satisfy override: %s must join %q but it has no team in section %q",
+				item.p.Email, e.s.Teams[item.p.OverrideIdx], slots[0].Section)
+		}
+	}
+
+	// Most constrained items first (fewest fitting slots); shuffle
 	// ties so equivalent orders vary run to run.
 	e.rng.Shuffle(len(items), func(i, j int) { items[i], items[j] = items[j], items[i] })
 	sort.SliceStable(items, func(i, j int) bool {
@@ -749,9 +899,14 @@ func (e *engine) fillSection(slots []*Slot, pool []*survey.Person) {
 		best:   penalty{math.MaxInt, math.MaxInt, math.MaxInt, math.MaxInt64},
 		choice: make([]int, len(items)),
 	}
-	// Seed the bound with a greedy completion, which always exists:
-	// seats never run out because slots cover the pool exactly.
-	st.best, st.choice = e.greedyComplete(items, orders, slots, seated, where)
+	// Seed the bound with a greedy completion. Without overrides one
+	// always exists (slots cover the pool exactly); with overrides the
+	// mandated seats may not suffice, which fails loudly.
+	gbest, gchoice, ok := e.greedyComplete(items, orders, slots, seated, where)
+	if !ok {
+		return overrideShortage(e.s, slots, pool)
+	}
+	st.best, st.choice = gbest, gchoice
 	e.nodes = 0
 	// Note: exhausted is sticky across sections within an attempt;
 	// each attempt starts from a fresh engine.
@@ -761,14 +916,45 @@ func (e *engine) fillSection(slots []*Slot, pool []*survey.Person) {
 		slots[si].Members = append(slots[si].Members, item.p)
 		delete(e.left, item.p.Key)
 	}
+	return nil
 }
 
-// countFits counts slots the respondent ranked without a veto: an
-// ordering heuristic only, since vetoes penalize rather than ban.
+// overrideShortage explains an unsatisfiable override: demanders
+// outnumber free seats on the mandated project's teams, or the
+// project has no team in the section at all.
+func overrideShortage(s *survey.Survey, slots []*Slot, pool []*survey.Person) error {
+	teams := map[int]bool{}
+	free := map[int]int{}
+	for _, slot := range slots {
+		teams[slot.Project] = true
+		free[slot.Project] += slot.Cap - len(slot.Members)
+	}
+	need := map[int]int{}
+	for _, p := range pool {
+		if p.OverrideIdx >= 0 {
+			need[p.OverrideIdx]++
+		}
+	}
+	for proj, n := range need {
+		if !teams[proj] {
+			return fmt.Errorf("cannot satisfy override: %d respondent(s) must join %q but it has no team in section %q",
+				n, s.Teams[proj], slots[0].Section)
+		}
+		if n > free[proj] {
+			return fmt.Errorf("cannot satisfy override: %d respondent(s) must join %q in section %q but it has %d free seat(s)",
+				n, s.Teams[proj], slots[0].Section, free[proj])
+		}
+	}
+	return fmt.Errorf("cannot satisfy overrides in section %q", slots[0].Section)
+}
+
+// countFits counts allowed slots the respondent ranked without a
+// veto: an ordering heuristic only, since vetoes penalize rather
+// than ban.
 func countFits(item *fillItem, slots []*Slot) int {
 	n := 0
-	for _, slot := range slots {
-		if !vetoed(item.p, slot.Project) {
+	for _, si := range item.allow {
+		if !vetoed(item.p, slots[si].Project) {
 			n++
 		}
 	}
@@ -798,15 +984,16 @@ func (e *engine) placeCost(p *survey.Person, proj, si int, members []*survey.Per
 	return pen
 }
 
-// slotOrder returns slot indices cheapest-rank-first for the item,
-// uniform-random within equal ranks.
+// slotOrder returns allowed slot indices cheapest-rank-first for the
+// item, uniform-random within equal ranks.
 func (e *engine) slotOrder(item *fillItem, slots []*Slot) []int {
 	type scored struct {
 		idx int
 		val int
 	}
-	ss := make([]scored, 0, len(slots))
-	for i, slot := range slots {
+	ss := make([]scored, 0, len(item.allow))
+	for _, i := range item.allow {
+		slot := slots[i]
 		v := blankCost
 		if !vetoed(item.p, slot.Project) {
 			v = rankCost(item.p, slot.Project)
@@ -827,10 +1014,11 @@ type searchState struct {
 	choice []int
 }
 
-// greedyComplete seats each item on its first slot with a free seat,
-// accumulating the true penalty. It always completes: one seat per
-// respondent exists because slots cover the pool exactly.
-func (e *engine) greedyComplete(items []*fillItem, orders [][]int, slots []*Slot, seated [][]*survey.Person, where map[string]int) (penalty, []int) {
+// greedyComplete seats each item on its first allowed slot with a
+// free seat, accumulating the true penalty. Without overrides it
+// always completes (slots cover the pool exactly); with overrides the
+// mandated seats may not suffice, reported as false.
+func (e *engine) greedyComplete(items []*fillItem, orders [][]int, slots []*Slot, seated [][]*survey.Person, where map[string]int) (penalty, []int, bool) {
 	gseated := make([][]*survey.Person, len(seated))
 	for i := range seated {
 		gseated[i] = append([]*survey.Person(nil), seated[i]...)
@@ -842,6 +1030,7 @@ func (e *engine) greedyComplete(items []*fillItem, orders [][]int, slots []*Slot
 	choice := make([]int, len(items))
 	var total penalty
 	for i, item := range items {
+		placed := false
 		for _, si := range orders[i] {
 			if len(gseated[si]) >= slots[si].Cap {
 				continue
@@ -850,10 +1039,14 @@ func (e *engine) greedyComplete(items []*fillItem, orders [][]int, slots []*Slot
 			gseated[si] = append(gseated[si], item.p)
 			gwhere[item.p.Key] = si
 			choice[i] = si
+			placed = true
 			break
 		}
+		if !placed {
+			return penalty{}, nil, false
+		}
 	}
-	return total, choice
+	return total, choice, true
 }
 
 // searchWithSeating explores completions depth-first along the
@@ -1131,9 +1324,11 @@ func (e *engine) altFor(p *survey.Person, seated *Slot) string {
 	return "vetoed every other project offered in this section"
 }
 
-// WriteCSV renders slots as rows of "team name, email, ...",
-// one row per team, rows sorted by team name then section, emails
-// sorted within each row.
+// WriteCSV renders slots as a header row of "Team,Person 1, ..."
+// followed by one row per team, rows sorted by team name then
+// section, emails sorted within each row. The person columns span the
+// largest team; shorter rows are padded with blanks so the CSV stays
+// rectangular.
 func WriteCSV(w io.Writer, s *survey.Survey, slots []*Slot) error {
 	ordered := append([]*Slot(nil), slots...)
 	sort.Slice(ordered, func(i, j int) bool {
@@ -1143,14 +1338,32 @@ func WriteCSV(w io.Writer, s *survey.Survey, slots []*Slot) error {
 		}
 		return ordered[i].Section < ordered[j].Section
 	})
+	width := 0
+	for _, slot := range ordered {
+		if len(slot.Members) > width {
+			width = len(slot.Members)
+		}
+	}
 	cw := csv.NewWriter(w)
+	header := make([]string, 0, width+1)
+	header = append(header, "Team")
+	for i := 1; i <= width; i++ {
+		header = append(header, fmt.Sprintf("Person %d", i))
+	}
+	if err := cw.Write(header); err != nil {
+		return err
+	}
 	for _, slot := range ordered {
 		emails := make([]string, 0, len(slot.Members))
 		for _, m := range slot.Members {
 			emails = append(emails, m.Email)
 		}
 		sort.Strings(emails)
-		if err := cw.Write(append([]string{s.Teams[slot.Project]}, emails...)); err != nil {
+		row := append([]string{s.Teams[slot.Project]}, emails...)
+		for len(row) < width+1 {
+			row = append(row, "")
+		}
+		if err := cw.Write(row); err != nil {
 			return err
 		}
 	}

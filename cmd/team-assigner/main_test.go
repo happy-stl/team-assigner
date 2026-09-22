@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -21,7 +22,8 @@ const goldenVotes = `timestamp,email,section,Red,Blue,person match
 2024-01-04,d@example.com,1,2,1,
 `
 
-const goldenTeams = "Red,a@example.com,b@example.com,c@example.com,d@example.com\n"
+const goldenTeams = "Team,Person 1,Person 2,Person 3,Person 4\n" +
+	"Red,a@example.com,b@example.com,c@example.com,d@example.com\n"
 
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
@@ -121,6 +123,14 @@ func TestSampleEndToEnd(t *testing.T) {
 		t.Fatalf("assign exit = %d", code)
 	}
 	rows := readCSV(t, out)
+	if len(rows) == 0 || rows[0][0] != "Team" {
+		t.Fatalf("missing header row, got %v", rows)
+	}
+	for i, cell := range rows[0][1:] {
+		if want := "Person " + itoa(i+1); cell != want {
+			t.Fatalf("header[%d] = %q, want %q", i+1, cell, want)
+		}
+	}
 
 	teamIdx := map[string]int{}
 	for i, name := range s.Teams {
@@ -128,15 +138,18 @@ func TestSampleEndToEnd(t *testing.T) {
 	}
 	seated := map[string]bool{}
 	teamOf := map[string][]string{} // member key -> row emails
-	for _, row := range rows {
-		if len(row) < 4 || len(row) > 5 {
-			t.Fatalf("row %v has %d cells, want team + 3-4 emails", row, len(row))
+	for _, row := range rows[1:] {
+		if len(row) != len(rows[0]) {
+			t.Fatalf("row %v has %d cells, want %d (header width)", row, len(row), len(rows[0]))
 		}
 		proj, ok := teamIdx[row[0]]
 		if !ok {
 			t.Fatalf("unknown team %q", row[0])
 		}
-		members := row[1:]
+		members := nonBlank(row[1:])
+		if len(members) < 3 || len(members) > 4 {
+			t.Fatalf("team %q has %d members, want 3-4", row[0], len(members))
+		}
 		var section string
 		for j, email := range members {
 			p, ok := s.ByKey[key(email)]
@@ -181,6 +194,21 @@ func TestSampleEndToEnd(t *testing.T) {
 
 func key(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// nonBlank drops padding cells from rectangular output rows.
+func nonBlank(cells []string) []string {
+	var out []string
+	for _, c := range cells {
+		if strings.TrimSpace(c) != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func itoa(n int) string {
+	return strconv.Itoa(n)
 }
 
 func sameSet(a, b []string) bool {
@@ -254,8 +282,8 @@ func TestSizeFlags(t *testing.T) {
 		t.Fatalf("assign -max-size 5 exit = %d", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2 teams of five", len(rows))
+	if len(rows) != 3 || rows[0][0] != "Team" {
+		t.Fatalf("want header + 2 teams of five, got %v", rows)
 	}
 	// ...while a bound the data cannot meet remaps instead of
 	// failing: ten people cannot split into teams of exactly 3.
@@ -265,8 +293,8 @@ func TestSizeFlags(t *testing.T) {
 	}
 	rows = readCSV(t, out)
 	seated := 0
-	for _, row := range rows {
-		seated += len(row) - 1
+	for _, row := range rows[1:] {
+		seated += len(nonBlank(row[1:]))
 	}
 	if seated != 10 {
 		t.Fatalf("remap seated %d of 10", seated)
@@ -294,11 +322,51 @@ func TestRemapEndToEnd(t *testing.T) {
 		t.Fatalf("5-person section exit = %d, want 1 (remap written)", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 1 || len(rows[0]) != 6 {
-		t.Fatalf("want one team of five, got %v", rows)
+	if len(rows) != 2 || len(nonBlank(rows[1])) != 6 {
+		t.Fatalf("want header + one team of five, got %v", rows)
 	}
 	if code := run([]string{"validate", "-input", in}); code == 0 {
 		t.Fatalf("validate of 5-person section exit = %d, want nonzero", code)
+	}
+}
+
+func TestOverrideCLI(t *testing.T) {
+	// Teacher override through the CLI: a lands on Red despite
+	// ranking Blue first; an unknown team fails validation.
+	in := writeTemp(t, "votes.csv", `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,3,1,,Red
+2024-01-02,b@example.com,1,1,2,,
+2024-01-03,c@example.com,1,1,2,,
+2024-01-04,d@example.com,1,2,1,,
+`)
+	out := filepath.Join(t.TempDir(), "teams.csv")
+	if code := run([]string{"assign", "-input", in, "-output", out, "-seed", "1"}); code != 0 {
+		t.Fatalf("assign exit = %d", code)
+	}
+	rows := readCSV(t, out)
+	found := false
+	for _, row := range rows[1:] {
+		for _, email := range nonBlank(row[1:]) {
+			if key(email) == "a@example.com" {
+				found = true
+				if row[0] != "Red" {
+					t.Fatalf("a on %q, want Red", row[0])
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("a missing from output")
+	}
+
+	bad := writeTemp(t, "bad.csv", `timestamp,email,section,Red,Blue,person match,override
+2024-01-01,a@example.com,1,1,2,,Green
+`)
+	if code := run([]string{"validate", "-input", bad}); code == 0 {
+		t.Fatalf("validate of unknown override exit = %d, want nonzero", code)
+	}
+	if code := run([]string{"assign", "-input", bad, "-output", out, "-seed", "1"}); code == 0 {
+		t.Fatalf("assign of unknown override exit = %d, want nonzero", code)
 	}
 }
 
@@ -318,7 +386,7 @@ func TestValidateVetoAll(t *testing.T) {
 		t.Fatalf("assign of veto-all exit = %d, want 1 (remap written)", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 1 || len(rows[0]) != 4 {
-		t.Fatalf("want one team of three, got %v", rows)
+	if len(rows) != 2 || len(nonBlank(rows[1])) != 4 {
+		t.Fatalf("want header + one team of three, got %v", rows)
 	}
 }
