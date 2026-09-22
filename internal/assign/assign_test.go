@@ -230,7 +230,7 @@ func TestSeedReproducible(t *testing.T) {
 			t.Fatalf("six-person split should be strict: %q", report.Describe())
 		}
 		var buf bytes.Buffer
-		if err := WriteCSV(&buf, s, slots); err != nil {
+		if err := WriteCSV(&buf, s, slots, 42); err != nil {
 			t.Fatalf("WriteCSV = %v", err)
 		}
 		return buf.String()
@@ -740,20 +740,26 @@ func TestWriteCSVShape(t *testing.T) {
 		t.Fatalf("six-person split should be strict: %q", report.Describe())
 	}
 	var buf bytes.Buffer
-	if err := WriteCSV(&buf, s, slots); err != nil {
+	if err := WriteCSV(&buf, s, slots, 7); err != nil {
 		t.Fatalf("WriteCSV = %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("rows = %d, want header + 2 teams:\n%s", len(lines), buf.String())
+	if len(lines) != 5 {
+		t.Fatalf("rows = %d, want header + 2 teams + blank + seed:\n%s", len(lines), buf.String())
 	}
 	if lines[0] != "Team,Person 1,Person 2,Person 3" {
 		t.Fatalf("header = %q", lines[0])
 	}
-	for _, line := range lines[1:] {
+	for _, line := range lines[1:3] {
 		cells := strings.Split(line, ",")
 		if len(cells) != 4 { // team name + 3 members
 			t.Fatalf("row %q has %d cells, want 4", line, len(cells))
 		}
+	}
+	if lines[3] != "" {
+		t.Fatalf("line 4 = %q, want blank", lines[3])
+	}
+	if lines[4] != "seed,7" {
+		t.Fatalf("seed row = %q, want %q", lines[4], "seed,7")
 	}
 }

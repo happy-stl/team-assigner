@@ -1328,8 +1328,9 @@ func (e *engine) altFor(p *survey.Person, seated *Slot) string {
 // followed by one row per team, rows sorted by team name then
 // section, emails sorted within each row. The person columns span the
 // largest team; shorter rows are padded with blanks so the CSV stays
-// rectangular.
-func WriteCSV(w io.Writer, s *survey.Survey, slots []*Slot) error {
+// rectangular. After a blank line, a final "seed,<n>" row records the
+// seed that produced the file, so any run can be reproduced.
+func WriteCSV(w io.Writer, s *survey.Survey, slots []*Slot, seed int64) error {
 	ordered := append([]*Slot(nil), slots...)
 	sort.Slice(ordered, func(i, j int) bool {
 		a, b := s.Teams[ordered[i].Project], s.Teams[ordered[j].Project]
@@ -1366,6 +1367,12 @@ func WriteCSV(w io.Writer, s *survey.Survey, slots []*Slot) error {
 		if err := cw.Write(row); err != nil {
 			return err
 		}
+	}
+	if err := cw.Write(nil); err != nil {
+		return err
+	}
+	if err := cw.Write([]string{"seed", strconv.FormatInt(seed, 10)}); err != nil {
+		return err
 	}
 	cw.Flush()
 	return cw.Error()

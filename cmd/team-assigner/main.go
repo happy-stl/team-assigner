@@ -66,11 +66,10 @@ func runAssign(args []string) int {
 	var seed seedFlag
 	fs.Var(&seed, "seed", "RNG seed for reproducible runs (default: time-based)")
 	// Accept -seed N and positional INPUT OUTPUT fallbacks.
-	var pos []string
-	if err := fs.Parse(args); err != nil {
+	flagArgs, pos := splitArgs(args)
+	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
-	pos = fs.Args()
 	if *input == "" && len(pos) > 0 {
 		*input = pos[0]
 		pos = pos[1:]
@@ -111,7 +110,7 @@ func runAssign(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	werr := assign.WriteCSV(out, s, slots)
+	werr := assign.WriteCSV(out, s, slots, useed)
 	cerr := out.Close()
 	if werr != nil || cerr != nil {
 		fmt.Fprintln(os.Stderr, "error: writing output:", firstErr(werr, cerr))
@@ -141,12 +140,13 @@ func runValidate(args []string) int {
 	input := fs.String("input", "", "survey CSV to read")
 	maxSize := fs.Int("max-size", 4, "most people per team")
 	minSize := fs.Int("min-size", 0, "fewest people per team (0 = one less than -max-size)")
-	if err := fs.Parse(args); err != nil {
+	flagArgs, pos := splitArgs(args)
+	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
 	path := *input
-	if path == "" && len(fs.Args()) > 0 {
-		path = fs.Args()[0]
+	if path == "" && len(pos) > 0 {
+		path = pos[0]
 	}
 	if path == "" {
 		fmt.Fprintln(os.Stderr, "validate needs -input VOTES.csv")
@@ -235,6 +235,38 @@ func resolveMinSize(flag, maxSize int) int {
 		return maxSize - 1
 	}
 	return 1
+}
+
+// splitArgs separates flag tokens from positional ones before the
+// flag package sees them: flag stops parsing at the first
+// positional, so "assign IN OUT -seed 1" would otherwise silently
+// drop -seed and randomize a run the user meant to fix.
+func splitArgs(args []string) (flags, pos []string) {
+	takesValue := map[string]bool{
+		"input": true, "output": true, "seed": true,
+		"max-size": true, "min-size": true,
+	}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) < 2 || a[0] != '-' {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		name := strings.TrimLeft(a, "-")
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			continue // -flag=value carries its own value
+		}
+		if takesValue[name] && i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return flags, pos
 }
 
 // seedFlag is an int64 flag that records whether it was set.

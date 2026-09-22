@@ -23,7 +23,8 @@ const goldenVotes = `timestamp,email,section,Red,Blue,person match
 `
 
 const goldenTeams = "Team,Person 1,Person 2,Person 3,Person 4\n" +
-	"Red,a@example.com,b@example.com,c@example.com,d@example.com\n"
+	"Red,a@example.com,b@example.com,c@example.com,d@example.com\n" +
+	"\nseed,11\n"
 
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
@@ -138,7 +139,14 @@ func TestSampleEndToEnd(t *testing.T) {
 	}
 	seated := map[string]bool{}
 	teamOf := map[string][]string{} // member key -> row emails
-	for _, row := range rows[1:] {
+	teamRows := rows[1:]
+	// The file ends with a blank line and a seed,<n> footer row;
+	// encoding/csv already dropped the blank line.
+	footer := teamRows[len(teamRows)-1]
+	if len(footer) != 2 || footer[0] != "seed" || footer[1] != "1" {
+		t.Fatalf("footer = %v, want [seed 1]", footer)
+	}
+	for _, row := range teamRows[:len(teamRows)-1] {
 		if len(row) != len(rows[0]) {
 			t.Fatalf("row %v has %d cells, want %d (header width)", row, len(row), len(rows[0]))
 		}
@@ -244,6 +252,26 @@ func readCSV(t *testing.T, path string) [][]string {
 	return rows
 }
 
+func TestSplitArgs(t *testing.T) {
+	// Flags keep working after positionals: "assign IN OUT -seed 1"
+	// must not silently drop the seed.
+	flags, pos := splitArgs([]string{"in.csv", "out.csv", "-seed", "11"})
+	if len(pos) != 2 || pos[0] != "in.csv" || pos[1] != "out.csv" {
+		t.Fatalf("pos = %v", pos)
+	}
+	if len(flags) != 2 || flags[0] != "-seed" || flags[1] != "11" {
+		t.Fatalf("flags = %v", flags)
+	}
+	// -flag=value stays one token; -- ends flag parsing.
+	flags, pos = splitArgs([]string{"-seed=7", "--", "-seed"})
+	if len(flags) != 1 || flags[0] != "-seed=7" {
+		t.Fatalf("flags = %v", flags)
+	}
+	if len(pos) != 1 || pos[0] != "-seed" {
+		t.Fatalf("pos = %v", pos)
+	}
+}
+
 func TestResolveMinSize(t *testing.T) {
 	// Unset (0) defaults to one less than the max...
 	if got := resolveMinSize(0, 4); got != 3 {
@@ -282,8 +310,8 @@ func TestSizeFlags(t *testing.T) {
 		t.Fatalf("assign -max-size 5 exit = %d", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 3 || rows[0][0] != "Team" {
-		t.Fatalf("want header + 2 teams of five, got %v", rows)
+	if len(rows) != 4 || rows[0][0] != "Team" {
+		t.Fatalf("want header + 2 teams of five + seed footer, got %v", rows)
 	}
 	// ...while a bound the data cannot meet remaps instead of
 	// failing: ten people cannot split into teams of exactly 3.
@@ -294,6 +322,9 @@ func TestSizeFlags(t *testing.T) {
 	rows = readCSV(t, out)
 	seated := 0
 	for _, row := range rows[1:] {
+		if row[0] == "seed" {
+			continue
+		}
 		seated += len(nonBlank(row[1:]))
 	}
 	if seated != 10 {
@@ -322,8 +353,8 @@ func TestRemapEndToEnd(t *testing.T) {
 		t.Fatalf("5-person section exit = %d, want 1 (remap written)", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 2 || len(nonBlank(rows[1])) != 6 {
-		t.Fatalf("want header + one team of five, got %v", rows)
+	if len(rows) != 3 || len(nonBlank(rows[1])) != 6 {
+		t.Fatalf("want header + one team of five + seed footer, got %v", rows)
 	}
 	if code := run([]string{"validate", "-input", in}); code == 0 {
 		t.Fatalf("validate of 5-person section exit = %d, want nonzero", code)
@@ -386,7 +417,7 @@ func TestValidateVetoAll(t *testing.T) {
 		t.Fatalf("assign of veto-all exit = %d, want 1 (remap written)", code)
 	}
 	rows := readCSV(t, out)
-	if len(rows) != 2 || len(nonBlank(rows[1])) != 4 {
-		t.Fatalf("want header + one team of three, got %v", rows)
+	if len(rows) != 3 || len(nonBlank(rows[1])) != 4 {
+		t.Fatalf("want header + one team of three + seed footer, got %v", rows)
 	}
 }

@@ -162,11 +162,15 @@ it first on a new file.
 A header row of `Team,Person 1, ...` (spanning the largest team) followed
 by one row per team: the team name first, then the member emails.
 Shorter rows are padded with blanks so the CSV stays rectangular.
+After a blank line, a final `seed,<n>` row records the seed that
+produced the file, so any run can be reproduced with `-seed <n>`.
 
 ```
 Team,Person 1,Person 2,Person 3,Person 4
 Beacon,amy@example.com,ben@example.com,cat@example.com,dan@example.com
 Cipher,amy@example.com,ben@example.com,eli@example.com,gus@example.com
+
+seed,1
 ```
 
 Rows sort by team name, emails sort within each row. Every respondent
